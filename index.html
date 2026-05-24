@@ -241,6 +241,15 @@
       #empty-state p { font-size: 13px; padding: 0 28px; text-align: center; }
     }
 
+    /* ── 3D dimension labels ─────────────────────────────────────────────── */
+    .dim-label-3d {
+      background: rgba(14,14,14,0.88); border: 1px solid #ff660044;
+      border-radius: 3px; color: #ff6600; font-size: 10px;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      padding: 2px 6px; white-space: nowrap;
+      pointer-events: none; user-select: none;
+    }
+
     /* ── Empty state ────────────────────────────────────────────────────── */
     #empty-state {
       position: absolute; inset: 0; display: flex;
@@ -327,6 +336,7 @@
 import * as THREE from 'three';
 import { OrbitControls }  from 'three/addons/controls/OrbitControls.js';
 import { Rhino3dmLoader } from 'three/addons/loaders/3DMLoader.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const viewport      = document.getElementById('viewport');
@@ -362,6 +372,14 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setClearColor(0x141414);
 viewport.appendChild(renderer.domElement);
 
+// ── CSS2D label renderer (for 3D dimension annotations) ───────────────────
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.domElement.style.position = 'absolute';
+labelRenderer.domElement.style.top = '0';
+labelRenderer.domElement.style.left = '0';
+labelRenderer.domElement.style.pointerEvents = 'none';
+viewport.appendChild(labelRenderer.domElement);
+
 // ── Scene ─────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
 
@@ -395,6 +413,7 @@ let models       = [];   // Array<{ filename, group, headerEl }>
 let selectables  = [];   // flat across all loaded models: { obj, name, type, origPos, origColor, sidebarEl, modelGroup }
 let selectedObj  = null;
 let activeModel  = null; // the one currently visible model
+let dimGroup     = null; // THREE.Group holding active 3D dimension lines
 
 // ── Loader ────────────────────────────────────────────────────────────────
 const loader = new Rhino3dmLoader();
@@ -406,6 +425,7 @@ function onResize() {
     const w = viewport.clientWidth;
     const h = viewport.clientHeight;
     renderer.setSize(w, h);
+    labelRenderer.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
 }
@@ -417,6 +437,7 @@ onResize();
     requestAnimationFrame(animate);
     controls.update();
     renderer.render(scene, camera);
+    labelRenderer.render(scene, camera);
 })();
 
 // ── File loading ──────────────────────────────────────────────────────────
@@ -638,8 +659,153 @@ function selectEntry(entry) {
     selectedObj = entry.obj;
     applySelection(entry.obj);
     showInfo(entry);
+    showDimensions(entry);
     // Scroll sidebar item into view
     entry.sidebarEl?.scrollIntoView({ block: 'nearest' });
+}
+
+// ── 3D dimension lines ────────────────────────────────────────────────────
+// Full OBB in world space: returns { center, axes[L,W,T], extents[{lo,hi,extent}] }
+function computeOBBFull(obj) {
+    const geo = obj.geometry;
+    if (!geo) return null;
+    obj.updateWorldMatrix(true, false);
+    const mat = obj.matrixWorld;
+    const pos = geo.attributes.position;
+    const n   = pos.count;
+    if (!n) return null;
+
+    const v = new THREE.Vector3();
+    let cx=0, cy=0, cz=0;
+    for (let i=0;i<n;i++){
+        v.fromBufferAttribute(pos,i).applyMatrix4(mat);
+        cx+=v.x; cy+=v.y; cz+=v.z;
+    }
+    cx/=n; cy/=n; cz/=n;
+
+    let c00=0,c11=0,c22=0,c01=0,c02=0,c12=0;
+    for (let i=0;i<n;i++){
+        v.fromBufferAttribute(pos,i).applyMatrix4(mat);
+        const x=v.x-cx, y=v.y-cy, z=v.z-cz;
+        c00+=x*x; c11+=y*y; c22+=z*z; c01+=x*y; c02+=x*z; c12+=y*z;
+    }
+    let A=[c00,c01,c02, c01,c11,c12, c02,c12,c22];
+    let V=[1,0,0, 0,1,0, 0,0,1];
+    for (let iter=0;iter<50;iter++){
+        let p=0,q=1,best=Math.abs(A[1]);
+        if(Math.abs(A[2])>best){p=0;q=2;best=Math.abs(A[2]);}
+        if(Math.abs(A[5])>best){p=1;q=2;best=Math.abs(A[5]);}
+        if(best<1e-12) break;
+        const app=A[3*p+p],aqq=A[3*q+q],apq=A[3*p+q];
+        const ang=0.5*Math.atan2(2*apq,app-aqq);
+        const c=Math.cos(ang),s=Math.sin(ang);
+        const nA=[...A];
+        nA[3*p+p]=c*c*app+2*s*c*apq+s*s*aqq;
+        nA[3*q+q]=s*s*app-2*s*c*apq+c*c*aqq;
+        nA[3*p+q]=nA[3*q+p]=0;
+        for(let r=0;r<3;r++){
+            if(r===p||r===q) continue;
+            nA[3*r+p]=nA[3*p+r]= c*A[3*r+p]+s*A[3*r+q];
+            nA[3*r+q]=nA[3*q+r]=-s*A[3*r+p]+c*A[3*r+q];
+        }
+        A=nA;
+        const nV=[...V];
+        for(let r=0;r<3;r++){
+            nV[3*r+p]= c*V[3*r+p]+s*V[3*r+q];
+            nV[3*r+q]=-s*V[3*r+p]+c*V[3*r+q];
+        }
+        V=nV;
+    }
+    const center   = new THREE.Vector3(cx,cy,cz);
+    const rawAxes  = [0,1,2].map(k=>new THREE.Vector3(V[k],V[3+k],V[6+k]).normalize());
+    const rawExts  = rawAxes.map(ax=>{
+        let lo=Infinity, hi=-Infinity;
+        for(let i=0;i<n;i++){
+            v.fromBufferAttribute(pos,i).applyMatrix4(mat);
+            const t=(v.x-cx)*ax.x+(v.y-cy)*ax.y+(v.z-cz)*ax.z;
+            if(t<lo)lo=t; if(t>hi)hi=t;
+        }
+        return {lo, hi, extent:hi-lo};
+    });
+    const ord=[0,1,2].sort((a,b)=>rawExts[b].extent-rawExts[a].extent);
+    return { center, axes:ord.map(i=>rawAxes[i]), extents:ord.map(i=>rawExts[i]) };
+}
+
+function hideDimensions() {
+    if (!dimGroup) return;
+    dimGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    if (dimGroup.userData.mats) dimGroup.userData.mats.forEach(m => m.dispose());
+    scene.remove(dimGroup);
+    dimGroup = null;
+}
+
+function showDimensions(entry) {
+    hideDimensions();
+    if (!entry.obj.isMesh) return;
+    const obb = computeOBBFull(entry.obj);
+    if (!obb) return;
+
+    const { center, axes, extents } = obb;
+    const [A, B, C] = axes;
+    const [eA, eB, eC] = extents;
+    const maxE = Math.max(eA.extent, eB.extent, eC.extent) || 1;
+    const gap  = maxE * 0.14;
+    const arrSz = maxE * 0.045;
+
+    const COLORS = [0xd95f5f, 0x5fc45f, 0x5f8fd9];
+    const NAMES  = ['L', 'W', 'T'];
+    const mats   = COLORS.map(c => new THREE.LineBasicMaterial({ color: c }));
+
+    dimGroup = new THREE.Group();
+    dimGroup.userData.mats = mats;
+    scene.add(dimGroup);
+
+    // Three dimension lines fan out from the (+A, +B, -C) corner of the OBB.
+    // Each line runs along its own axis, offset outward along the other two.
+    const defs = [
+        // L: along A, offset in +B and -C
+        { ax:A, e:eA, offP:B, oP:eB.hi+gap, offQ:C, oQ:eC.lo-gap, fP:eB.hi, fQ:eC.lo, mat:mats[0], name:NAMES[0] },
+        // W: along B, offset in +A and -C
+        { ax:B, e:eB, offP:A, oP:eA.hi+gap, offQ:C, oQ:eC.lo-gap, fP:eA.hi, fQ:eC.lo, mat:mats[1], name:NAMES[1] },
+        // T: along C, offset in +A and +B
+        { ax:C, e:eC, offP:A, oP:eA.hi+gap, offQ:B, oQ:eB.hi+gap, fP:eA.hi, fQ:eB.hi, mat:mats[2], name:NAMES[2] },
+    ];
+
+    defs.forEach(({ ax, e, offP, oP, offQ, oQ, fP, fQ, mat, name }) => {
+        // Dimension line endpoints (offset from object)
+        const dS = center.clone().addScaledVector(ax,e.lo).addScaledVector(offP,oP).addScaledVector(offQ,oQ);
+        const dE = center.clone().addScaledVector(ax,e.hi).addScaledVector(offP,oP).addScaledVector(offQ,oQ);
+        // Object face corner points (for extension lines)
+        const fS = center.clone().addScaledVector(ax,e.lo).addScaledVector(offP,fP).addScaledVector(offQ,fQ);
+        const fE = center.clone().addScaledVector(ax,e.hi).addScaledVector(offP,fP).addScaledVector(offQ,fQ);
+
+        // Extension lines + dimension line as one LineSegments batch
+        const geo = new THREE.BufferGeometry().setFromPoints([fS,dS, dS,dE, fE,dE]);
+        dimGroup.add(new THREE.LineSegments(geo, mat));
+
+        // Arrowheads in the plane of the dim line and extension line
+        const extDir = dS.clone().sub(fS).normalize();
+        const mkArrow = (tip, along) => {
+            const pts = [
+                tip.clone().addScaledVector(along,arrSz).addScaledVector(extDir, arrSz*0.4),
+                tip,
+                tip.clone().addScaledVector(along,arrSz).addScaledVector(extDir,-arrSz*0.4),
+            ];
+            const g = new THREE.BufferGeometry().setFromPoints(pts);
+            dimGroup.add(new THREE.Line(g, mat));
+        };
+        mkArrow(dS,  ax.clone());         // start arrow points toward dE (+ax)
+        mkArrow(dE,  ax.clone().negate()); // end arrow points toward dS (−ax)
+
+        // CSS2D text label at midpoint of dimension line
+        const mid = dS.clone().lerp(dE, 0.5);
+        const div = document.createElement('div');
+        div.className = 'dim-label-3d';
+        div.textContent = `${name}  ${inToFrac(e.extent)}`;
+        const lbl = new CSS2DObject(div);
+        lbl.position.copy(mid);
+        dimGroup.add(lbl);
+    });
 }
 
 // ── Info panel ────────────────────────────────────────────────────────────
@@ -815,6 +981,7 @@ function hideInfo() {
 function deselect() {
     selectedObj = null;
     applySelection(null);
+    hideDimensions();
     hideInfo();
 }
 
