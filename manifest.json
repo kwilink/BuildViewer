@@ -2,7 +2,7 @@
   "name": "Build Viewer",
   "short_name": "Build Viewer",
   "description": "View and inspect Rhino .3dm files in the browser.",
-  "start_url": "./3dm_viewer.html",
+  "start_url": "./index.html",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#141414",

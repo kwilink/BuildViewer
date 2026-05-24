@@ -5,6 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>3DM Viewer</title>
 
+  <!-- Security -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src  'self' https://cdn.jsdelivr.net 'unsafe-inline' 'wasm-unsafe-eval';
+    style-src   'self' 'unsafe-inline';
+    img-src     'self' blob: data:;
+    connect-src 'self' https://cdn.jsdelivr.net;
+    worker-src  blob: https://cdn.jsdelivr.net;
+    object-src  'none';
+    base-uri    'self';
+    frame-ancestors 'none';
+  " />
+
   <!-- PWA -->
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="3dm_viewer_icons/icon-192.png" />
