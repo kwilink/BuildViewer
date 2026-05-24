@@ -539,7 +539,8 @@ function fitCameraToActive() {
     scene.add(gridHelper);
 
     controls.target.copy(center);
-    camera.position.set(center.x + maxDim, center.y + maxDim * 0.75, center.z + maxDim * 1.4);
+    const zoom = window.innerWidth <= 768 ? 1.7 : 1.0;
+    camera.position.set(center.x + maxDim * zoom, center.y + maxDim * 0.75 * zoom, center.z + maxDim * 1.4 * zoom);
     camera.near = maxDim * 0.001;
     camera.far  = maxDim * 200;
     camera.updateProjectionMatrix();
