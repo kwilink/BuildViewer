@@ -1,0 +1,24 @@
+{
+  "name": "Build Viewer",
+  "short_name": "Build Viewer",
+  "description": "View and inspect Rhino .3dm files in the browser.",
+  "start_url": "./3dm_viewer.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#141414",
+  "theme_color": "#141414",
+  "icons": [
+    {
+      "src": "3dm_viewer_icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "3dm_viewer_icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

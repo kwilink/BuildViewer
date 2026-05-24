@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3DM Viewer</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="3dm_viewer_icons/icon-192.png" />
+  <meta name="theme-color" content="#141414" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Build Viewer" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: #141414; color: #ff6600;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+
+    #app { display: flex; flex-direction: column; width: 100%; height: 100%; }
+    #content-row { display: flex; flex: 1; overflow: hidden; min-height: 0; }
+
+    /* ── Sidebar ─────────────────────────────────────────────────────────── */
+    #sidebar {
+      width: 240px; flex-shrink: 0; overflow-y: auto; overflow-x: hidden;
+      background: rgba(8, 0, 3, 0.98); border-right: 1px solid #ff660033;
+      display: flex; flex-direction: column;
+    }
+    #sidebar-empty {
+      padding: 18px 14px; font-size: 12px; color: #663300;
+      text-align: center; line-height: 1.7;
+    }
+    .model-entry { border-bottom: 1px solid #ff660022; }
+    .model-header {
+      padding: 9px 12px; font-size: 12px; font-weight: 600;
+      color: #ff6600; cursor: pointer; user-select: none;
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(255,102,0,0.06); white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .model-header:hover { background: rgba(255,102,0,0.12); }
+    .model-header.active { background: rgba(255,102,0,0.22); border-left: 2px solid #ff6600; padding-left: 10px; }
+    .model-toggle { font-size: 9px; flex-shrink: 0; transition: transform 0.15s; display: inline-block; }
+    .model-toggle.collapsed { transform: rotate(-90deg); }
+    .obj-list { list-style: none; }
+    .obj-list.collapsed { display: none; }
+    .obj-item {
+      padding: 4px 10px 4px 24px; font-size: 11px; color: #884400;
+      cursor: pointer; transition: background 0.1s, color 0.1s;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .obj-item:hover { background: rgba(255,102,0,0.08); color: #cc4400; }
+    .obj-item.selected {
+      background: rgba(255,102,0,0.18); color: #ff6600; font-weight: 600;
+      border-left: 2px solid #ff6600; padding-left: 22px;
+    }
+
+    /* ── Toolbar ─────────────────────────────────────────────────────────── */
+    #toolbar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 0 18px; height: 50px; flex-shrink: 0;
+      background: #1c1c1c; border-bottom: 1px solid #2a2a2a; z-index: 10;
+    }
+
+    #toolbar h1 {
+      font-size: 14px; font-weight: 500; letter-spacing: 0.6px; color: #ff6600;
+      text-shadow: 0 0 10px #ff660088;
+    }
+
+    #open-btn {
+      margin-left: auto;
+      padding: 6px 16px; border-radius: 5px;
+      border: 1px solid #ff660055; background: #252525;
+      color: #ff6600; font-size: 13px; cursor: pointer;
+      transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
+      text-shadow: 0 0 8px #ff660088;
+    }
+    #open-btn:hover { background: #1e1e1e; border-color: #ff6600; box-shadow: 0 0 8px #ff660044; }
+
+    #reset-btn {
+      padding: 6px 16px; border-radius: 5px;
+      border: 1px solid #ff660055; background: #1a0a00;
+      color: #ff6600; font-size: 13px; cursor: pointer;
+      transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
+      text-shadow: 0 0 8px #ff660088;
+    }
+    #reset-btn:hover { background: #2a1000; border-color: #ff6600; box-shadow: 0 0 8px #ff660044; }
+
+    #file-input { display: none; }
+
+    /* ── Viewport ────────────────────────────────────────────────────────── */
+    #viewport { flex: 1; position: relative; overflow: hidden; }
+    canvas { display: block; }
+
+    /* ── Drop overlay ───────────────────────────────────────────────────── */
+    #drop-overlay {
+      display: none; position: absolute; inset: 0; z-index: 20;
+      background: rgba(20, 20, 20, 0.90);
+      border: 2px dashed #444; border-radius: 8px; margin: 14px;
+      align-items: center; justify-content: center; flex-direction: column; gap: 14px;
+      font-size: 16px; color: #ff6600; pointer-events: none;
+    }
+    #drop-overlay.active { display: flex; }
+
+    /* ── Loading overlay ────────────────────────────────────────────────── */
+    #loading-overlay {
+      display: none; position: absolute; inset: 0; z-index: 30;
+      background: rgba(20, 20, 20, 0.80);
+      align-items: center; justify-content: center; flex-direction: column; gap: 14px;
+    }
+    #loading-overlay.active { display: flex; }
+
+    .spinner {
+      width: 38px; height: 38px;
+      border: 3px solid #331100; border-top-color: #ff6600;
+      border-radius: 50%; animation: spin 0.65s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { font-size: 13px; color: #ff6600; text-shadow: 0 0 8px #ff660088; }
+
+    /* ── Info panel ─────────────────────────────────────────────────────── */
+    #info-panel {
+      display: none; position: absolute; bottom: 22px; left: 22px; z-index: 15;
+      background: rgba(18, 18, 18, 0.94); border: 1px solid #2e2e2e;
+      border-radius: 7px; padding: 13px 18px; min-width: 210px;
+      backdrop-filter: blur(8px);
+    }
+    #info-panel.visible { display: block; }
+
+    .info-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+      color: #cc4400; margin-bottom: 5px;
+    }
+    #info-name {
+      font-size: 15px; font-weight: 500; color: #ff6600;
+      word-break: break-word; line-height: 1.3;
+      text-shadow: 0 0 10px #ff660088;
+    }
+    #info-type {
+      font-size: 11px; color: #884400; margin-top: 5px;
+    }
+    .info-dims {
+      margin-top: 11px; padding-top: 11px;
+      border-top: 1px solid #272727;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .dim-row {
+      display: flex; align-items: baseline; gap: 10px; font-size: 13px;
+    }
+    .dim-axis {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+      width: 10px; flex-shrink: 0; text-align: center;
+    }
+    .dim-axis.x { color: #d95f5f; }
+    .dim-axis.y { color: #5fc45f; }
+    .dim-axis.z { color: #5f8fd9; }
+    .dim-val {
+      color: #ff6600; font-variant-numeric: tabular-nums;
+      font-size: 13px; letter-spacing: 0.2px;
+    }
+    .dim-frac {
+      color: #cc4400; font-variant-numeric: tabular-nums;
+      font-size: 12px; letter-spacing: 0.1px; margin-left: 4px;
+    }
+    .dim-ft {
+      color: #884400; font-variant-numeric: tabular-nums;
+      font-size: 11px; letter-spacing: 0.1px; margin-left: 4px;
+    }
+    #info-deselect {
+      margin-top: 10px; font-size: 11px; color: #663300;
+      cursor: pointer; user-select: none;
+    }
+    #info-deselect:hover { color: #ff6600; }
+
+    /* ── Corner hint ────────────────────────────────────────────────────── */
+    #hint {
+      position: absolute; bottom: 22px; right: 22px; z-index: 15;
+      font-size: 11px; color: #884400; text-align: right; line-height: 1.8;
+      pointer-events: none;
+    }
+
+    /* ── Hamburger button (hidden on desktop) ───────────────────────────── */
+    #menu-btn {
+      display: none; flex-shrink: 0;
+      width: 38px; height: 38px; border-radius: 5px;
+      border: 1px solid #ff660044; background: transparent;
+      color: #ff6600; font-size: 20px; cursor: pointer;
+      align-items: center; justify-content: center; line-height: 1;
+    }
+
+    /* ── Sidebar overlay (mobile backdrop) ──────────────────────────────── */
+    #sidebar-overlay {
+      display: none; position: fixed; inset: 0; z-index: 99;
+      background: rgba(0,0,0,0.55);
+    }
+    #sidebar-overlay.active { display: block; }
+
+    /* ── Mobile ─────────────────────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      #menu-btn { display: flex; }
+
+      #toolbar { padding: 0 12px; gap: 10px; }
+      #toolbar h1 { font-size: 13px; }
+      #open-btn  { padding: 8px 12px; font-size: 13px; }
+      #reset-btn { padding: 8px 12px; font-size: 13px; }
+
+      /* Sidebar becomes a fixed drawer that slides in from the left */
+      #sidebar {
+        position: fixed; top: 0; bottom: 0;
+        left: -270px; width: 260px; z-index: 100;
+        transition: left 0.22s ease; border-right: 1px solid #ff660055;
+      }
+      #sidebar.open { left: 0; }
+
+      /* Bigger touch targets inside sidebar */
+      .model-header { padding: 13px 14px; font-size: 13px; }
+      .obj-item     { padding: 11px 10px 11px 28px; font-size: 12px; }
+
+      /* Info panel stretches full width at the bottom */
+      #info-panel {
+        left: 10px; right: 10px; bottom: 10px; min-width: 0;
+      }
+
+      /* Hint not useful on touch — replaced by JS */
+      #hint { display: none; }
+
+      #empty-state p { font-size: 13px; padding: 0 28px; text-align: center; }
+    }
+
+    /* ── Empty state ────────────────────────────────────────────────────── */
+    #empty-state {
+      position: absolute; inset: 0; display: flex;
+      align-items: center; justify-content: center; flex-direction: column; gap: 14px;
+      color: #884400; pointer-events: none;
+    }
+    #empty-state svg { opacity: 0.3; }
+    #empty-state p { font-size: 14px; }
+    #empty-state.hidden { display: none; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <div id="toolbar">
+    <button id="menu-btn">☰</button>
+    <h1>Build Viewer</h1>
+    <button id="open-btn">Open .3dm File</button>
+    <button id="reset-btn" style="display:none">Reset Positions</button>
+    <input type="file" id="file-input" accept=".3dm" />
+  </div>
+
+  <div id="content-row">
+
+  <div id="sidebar-overlay"></div>
+  <div id="sidebar">
+    <div id="sidebar-empty">Open a .3dm file to see models here.</div>
+  </div>
+
+  <div id="viewport">
+
+    <div id="empty-state">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>
+      </svg>
+      <p>Open or drop a .3dm file to begin</p>
+    </div>
+
+    <div id="drop-overlay">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      Drop .3dm file here
+    </div>
+
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+      <div class="loading-text">Parsing model…</div>
+    </div>
+
+    <div id="info-panel">
+      <div class="info-label">Selected Object</div>
+      <div id="info-name">—</div>
+      <div id="info-type"></div>
+      <div class="info-dims">
+        <div class="dim-row"><span class="dim-axis x">L</span><span class="dim-val" id="dim-x">—</span><span class="dim-frac" id="dim-x-frac"></span><span class="dim-ft" id="dim-x-ft"></span></div>
+        <div class="dim-row"><span class="dim-axis y">W</span><span class="dim-val" id="dim-y">—</span><span class="dim-frac" id="dim-y-frac"></span><span class="dim-ft" id="dim-y-ft"></span></div>
+        <div class="dim-row"><span class="dim-axis z">T</span><span class="dim-val" id="dim-z">—</span><span class="dim-frac" id="dim-z-frac"></span><span class="dim-ft" id="dim-z-ft"></span></div>
+      </div>
+      <div class="info-dims" id="vol-section" style="display:none">
+        <div class="info-label" style="margin-bottom:4px">Volume</div>
+        <div class="dim-row"><span class="dim-val" id="vol-in3">—</span><span class="dim-ft"> in³</span></div>
+        <div class="dim-row"><span class="dim-val" id="vol-ft3">—</span><span class="dim-ft"> ft³</span></div>
+      </div>
+      <div id="info-deselect">Click object again or background to deselect</div>
+    </div>
+
+    <div id="hint">
+      Orbit · Left drag<br>
+      Pan · Right drag<br>
+      Zoom · Scroll<br>
+      Select · Click
+    </div>
+
+  </div><!-- #viewport -->
+  </div><!-- #content-row -->
+</div><!-- #app -->
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls }  from 'three/addons/controls/OrbitControls.js';
+import { Rhino3dmLoader } from 'three/addons/loaders/3DMLoader.js';
+
+// ── DOM refs ──────────────────────────────────────────────────────────────
+const viewport      = document.getElementById('viewport');
+const fileInput     = document.getElementById('file-input');
+const openBtn       = document.getElementById('open-btn');
+const resetBtn      = document.getElementById('reset-btn');
+const dropOverlay   = document.getElementById('drop-overlay');
+const loadingOverlay= document.getElementById('loading-overlay');
+const infoPanel     = document.getElementById('info-panel');
+const infoName      = document.getElementById('info-name');
+const infoType      = document.getElementById('info-type');
+const dimX          = document.getElementById('dim-x');
+const dimY          = document.getElementById('dim-y');
+const dimZ          = document.getElementById('dim-z');
+const dimXFrac      = document.getElementById('dim-x-frac');
+const dimYFrac      = document.getElementById('dim-y-frac');
+const dimZFrac      = document.getElementById('dim-z-frac');
+const dimXFt        = document.getElementById('dim-x-ft');
+const dimYFt        = document.getElementById('dim-y-ft');
+const dimZFt        = document.getElementById('dim-z-ft');
+const emptyState    = document.getElementById('empty-state');
+const sidebar       = document.getElementById('sidebar');
+const sidebarEmpty  = document.getElementById('sidebar-empty');
+const menuBtn       = document.getElementById('menu-btn');
+const sidebarOverlay= document.getElementById('sidebar-overlay');
+const volSection    = document.getElementById('vol-section');
+const volIn3El      = document.getElementById('vol-in3');
+const volFt3El      = document.getElementById('vol-ft3');
+
+// ── Renderer ──────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x141414);
+viewport.appendChild(renderer.domElement);
+
+// ── Scene ─────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+scene.add(ambientLight);
+
+const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.2);
+dirLight1.position.set(5, 12, 8);
+scene.add(dirLight1);
+
+const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
+dirLight2.position.set(-6, -4, -6);
+scene.add(dirLight2);
+
+let gridHelper = null;
+
+// ── Camera ────────────────────────────────────────────────────────────────
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100000);
+camera.position.set(0, 30, 60);
+
+// ── Controls ──────────────────────────────────────────────────────────────
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.07;
+controls.screenSpacePanning = true;
+
+// ── State ─────────────────────────────────────────────────────────────────
+const raycaster  = new THREE.Raycaster();
+const mouse      = new THREE.Vector2();
+let models       = [];   // Array<{ filename, group, headerEl }>
+let selectables  = [];   // flat across all loaded models: { obj, name, type, origPos, origColor, sidebarEl, modelGroup }
+let selectedObj  = null;
+let activeModel  = null; // the one currently visible model
+
+// ── Loader ────────────────────────────────────────────────────────────────
+const loader = new Rhino3dmLoader();
+// rhino3dm WASM — pin to a version known to work with three@0.168.0
+loader.setLibraryPath('https://cdn.jsdelivr.net/npm/rhino3dm@8.6.1/');
+
+// ── Resize ────────────────────────────────────────────────────────────────
+function onResize() {
+    const w = viewport.clientWidth;
+    const h = viewport.clientHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+}
+new ResizeObserver(onResize).observe(viewport);
+onResize();
+
+// ── Render loop ───────────────────────────────────────────────────────────
+(function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+})();
+
+// ── File loading ──────────────────────────────────────────────────────────
+function loadFile(file) {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.3dm')) {
+        alert('Please open a Rhino .3dm file.');
+        return;
+    }
+
+    emptyState.classList.add('hidden');
+    loadingOverlay.classList.add('active');
+
+    const url = URL.createObjectURL(file);
+
+    loader.load(
+        url,
+        (object) => {
+            URL.revokeObjectURL(url);
+            loadingOverlay.classList.remove('active');
+
+            // Rhino is Z-up; Three.js is Y-up — rotate to align ground planes
+            object.rotation.x = -Math.PI / 2;
+
+            const modelSelectables = [];
+
+            // Walk every renderable child
+            object.traverse(child => {
+                if (!child.isMesh && !child.isLine && !child.isPoints) return;
+
+                const layerColor = layerColorFor(child);
+                const oldMats = Array.isArray(child.material) ? child.material : [child.material];
+                oldMats.forEach(m => m?.dispose());
+                child.material = makeMat(child, layerColor);
+
+                const attrs = child.userData?.attributes ?? {};
+                const name  = attrs.Name ?? attrs.name ?? child.name ?? '';
+                const type  = attrs.ObjectType
+                    ?? (child.isMesh ? 'Mesh' : child.isLine ? 'Curve' : 'Points');
+
+                const entry = { obj: child, name, type, origPos: child.position.clone(),
+                                origColor: layerColor.clone(), sidebarEl: null, modelGroup: object };
+                selectables.push(entry);
+                modelSelectables.push(entry);
+            });
+
+            scene.add(object);
+            const newModelEntry = { filename: file.name, group: object };
+            models.push(newModelEntry);
+            addModelToSidebar(file.name, modelSelectables);  // sets newModelEntry.headerEl
+            setActiveModel(newModelEntry);
+            resetBtn.style.display = '';
+        },
+        undefined,
+        (err) => {
+            URL.revokeObjectURL(url);
+            loadingOverlay.classList.remove('active');
+            if (models.length === 0) emptyState.classList.remove('hidden');
+            console.error('3DM load error:', err);
+            alert('Could not parse the .3dm file.\n\nMake sure it is a valid Rhino 8 file and try again.');
+        }
+    );
+}
+
+function layerColorFor(child) {
+    const layer = child.userData?.layer;
+    if (layer) {
+        const c = layer.Color;        // rhino3dm exposes Layer.Color
+        if (c != null) {
+            // Format A: plain {r, g, b} object, 0-255
+            if (typeof c.r === 'number') {
+                return new THREE.Color(c.r / 255, c.g / 255, c.b / 255);
+            }
+            // Format B: ABGR integer (0xAABBGGRR)
+            if (typeof c === 'number') {
+                return new THREE.Color(
+                    (c & 0xFF) / 255,
+                    ((c >> 8) & 0xFF) / 255,
+                    ((c >> 16) & 0xFF) / 255
+                );
+            }
+        }
+    }
+    // Fallback: whatever color the loader already put on the material
+    const existing = Array.isArray(child.material) ? child.material[0] : child.material;
+    if (existing?.color instanceof THREE.Color) return existing.color.clone();
+    return new THREE.Color(0x888888);
+}
+
+function makeMat(child, color) {
+    const base = { color, transparent: true, opacity: 0.15, depthWrite: false };
+    if (child.isLine) return new THREE.LineBasicMaterial(base);
+    return new THREE.MeshPhongMaterial({ ...base, side: THREE.DoubleSide, shininess: 25 });
+}
+
+function setActiveModel(modelEntry) {
+    if (selectedObj) deselect();
+    activeModel = modelEntry;
+    models.forEach(m => {
+        m.group.visible = (m === modelEntry);
+        if (m.headerEl) m.headerEl.classList.toggle('active', m === modelEntry);
+    });
+    fitCameraToActive();
+}
+
+function fitCameraToActive() {
+    if (!activeModel) return;
+    const box = new THREE.Box3().setFromObject(activeModel.group);
+    if (box.isEmpty()) return;
+
+    const center = box.getCenter(new THREE.Vector3());
+    const size   = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+
+    if (gridHelper) scene.remove(gridHelper);
+    const gridSize = Math.ceil(maxDim * 2 / 10) * 10;
+    const gridDivs = Math.min(Math.ceil(gridSize / (maxDim * 0.05)), 40);
+    gridHelper = new THREE.GridHelper(gridSize, gridDivs, 0xff6600, 0x553300);
+    gridHelper.position.set(center.x, box.min.y, center.z);
+    scene.add(gridHelper);
+
+    controls.target.copy(center);
+    camera.position.set(center.x + maxDim, center.y + maxDim * 0.75, center.z + maxDim * 1.4);
+    camera.near = maxDim * 0.001;
+    camera.far  = maxDim * 200;
+    camera.updateProjectionMatrix();
+    controls.update();
+}
+
+function addModelToSidebar(filename, entries) {
+    sidebarEmpty.style.display = 'none';
+
+    const modelDiv = document.createElement('div');
+    modelDiv.className = 'model-entry';
+
+    const header = document.createElement('div');
+    header.className = 'model-header';
+
+    const toggleArrow = document.createElement('span');
+    toggleArrow.className = 'model-toggle';
+    toggleArrow.textContent = '▼';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.title = filename;
+    nameSpan.textContent = filename;
+
+    header.appendChild(toggleArrow);
+    header.appendChild(nameSpan);
+    modelDiv.appendChild(header);
+
+    const list = document.createElement('ul');
+    list.className = 'obj-list';
+
+    entries.forEach(entry => {
+        const li = document.createElement('li');
+        li.className = 'obj-item';
+        li.textContent = entry.name.trim() || '(unnamed)';
+        li.title = li.textContent;
+        li.addEventListener('click', () => { selectEntry(entry); closeSidebar(); });
+        entry.sidebarEl = li;
+        list.appendChild(li);
+    });
+
+    modelDiv.appendChild(list);
+
+    // Arrow-only: toggle collapse without switching the active model
+    toggleArrow.addEventListener('click', e => {
+        e.stopPropagation();
+        const collapsed = list.classList.toggle('collapsed');
+        toggleArrow.classList.toggle('collapsed', collapsed);
+    });
+
+    // Header click: switch active model and auto-expand its list
+    const modelEntry = models[models.length - 1];
+    modelEntry.headerEl = header;
+    header.addEventListener('click', () => {
+        setActiveModel(modelEntry);
+        list.classList.remove('collapsed');
+        toggleArrow.classList.remove('collapsed');
+        closeSidebar();
+    });
+
+    sidebar.appendChild(modelDiv);
+}
+
+// ── Opacity helpers ───────────────────────────────────────────────────────
+function setMats(obj, transparent, opacity) {
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach(m => {
+        if (!m) return;
+        m.transparent = transparent;
+        m.opacity     = opacity;
+        m.depthWrite  = !transparent;
+        m.needsUpdate = true;
+    });
+}
+
+function applySelection(selected) {
+    selectables.forEach(({ obj, origColor, sidebarEl }) => {
+        const isSelected = selected !== null && obj === selected;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach(m => {
+            if (!m) return;
+            if (isSelected) {
+                if (m.color) m.color.set(0xff6600);
+                m.transparent = false; m.opacity = 1.0; m.depthWrite = true;
+            } else {
+                if (m.color && origColor) m.color.copy(origColor);
+                m.transparent = true;  m.opacity = 0.15; m.depthWrite = false;
+            }
+            m.needsUpdate = true;
+        });
+        if (sidebarEl) sidebarEl.classList.toggle('selected', isSelected);
+    });
+}
+
+function selectEntry(entry) {
+    selectedObj = entry.obj;
+    applySelection(entry.obj);
+    showInfo(entry);
+    // Scroll sidebar item into view
+    entry.sidebarEl?.scrollIntoView({ block: 'nearest' });
+}
+
+// ── Info panel ────────────────────────────────────────────────────────────
+function _gcd(a, b) { return b === 0 ? a : _gcd(b, a % b); }
+
+function inToFrac(inches, denom = 16) {
+    const whole      = Math.floor(inches);
+    let   num        = Math.round((inches - whole) * denom);
+    if (num === denom) return `${whole + 1}"`;
+    if (num === 0)     return `${whole}"`;
+    const g   = _gcd(num, denom);
+    const fStr = `${num / g}/${denom / g}`;
+    return whole > 0 ? `${whole} ${fStr}"` : `${fStr}"`;
+}
+
+function inToFtIn(totalInches) {
+    let ft = Math.floor(totalInches / 12);
+    let rem = totalInches - ft * 12;
+    let wholeIn = Math.floor(rem);
+    let sixteenths = Math.round((rem - wholeIn) * 16);
+
+    // Carry rounding overflow upward
+    if (sixteenths === 16) { sixteenths = 0; wholeIn++; }
+    if (wholeIn    === 12) { wholeIn    = 0; ft++;      }
+
+    // Reduce fraction to lowest terms
+    let fracStr = '';
+    if (sixteenths > 0) {
+        const gcd = (a, b) => b ? gcd(b, a % b) : a;
+        const g = gcd(sixteenths, 16);
+        fracStr = `${sixteenths / g}/${16 / g}`;
+    }
+
+    // Assemble inches string
+    let inPart = '';
+    if      (wholeIn > 0 && fracStr) inPart = `${wholeIn} ${fracStr}"`;
+    else if (wholeIn > 0)            inPart = `${wholeIn}"`;
+    else if (fracStr)                inPart = `${fracStr}"`;
+
+    if (ft === 0) return `(${inPart || '0"'})`;
+    if (!inPart)  return `(${ft}')`;
+    return `(${ft}' ${inPart})`;
+}
+
+function computeVolume(obj) {
+    if (!obj.isMesh || !obj.geometry) return null;
+    obj.updateWorldMatrix(true, false);
+    const mat = obj.matrixWorld;
+    const geo = obj.geometry;
+    const pos = geo.attributes.position;
+    const idx = geo.index;
+    const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+    let vol = 0;
+    const pick = (i, v) => v.fromBufferAttribute(pos, i).applyMatrix4(mat);
+    if (idx) {
+        for (let i = 0; i < idx.count; i += 3) {
+            pick(idx.getX(i), va); pick(idx.getX(i+1), vb); pick(idx.getX(i+2), vc);
+            vol += va.x*(vb.y*vc.z - vc.y*vb.z) + vb.x*(vc.y*va.z - va.y*vc.z) + vc.x*(va.y*vb.z - vb.y*va.z);
+        }
+    } else {
+        for (let i = 0; i < pos.count; i += 3) {
+            pick(i, va); pick(i+1, vb); pick(i+2, vc);
+            vol += va.x*(vb.y*vc.z - vc.y*vb.z) + vb.x*(vc.y*va.z - va.y*vc.z) + vc.x*(va.y*vb.z - vb.y*va.z);
+        }
+    }
+    return Math.abs(vol) / 6;
+}
+
+// Oriented Bounding Box via PCA (Jacobi eigendecomposition of the vertex
+// covariance matrix).  Returns [largest, middle, smallest] extents so the
+// dimensions reflect the part's own axes, not the world grid.
+function computeOBBSize(geo) {
+    const pos = geo.attributes.position;
+    const n   = pos.count;
+    if (!n) return [0, 0, 0];
+
+    // Centroid
+    let cx = 0, cy = 0, cz = 0;
+    for (let i = 0; i < n; i++) { cx += pos.getX(i); cy += pos.getY(i); cz += pos.getZ(i); }
+    cx /= n; cy /= n; cz /= n;
+
+    // Covariance matrix (symmetric 3×3, row-major flat)
+    let c00=0, c11=0, c22=0, c01=0, c02=0, c12=0;
+    for (let i = 0; i < n; i++) {
+        const x = pos.getX(i)-cx, y = pos.getY(i)-cy, z = pos.getZ(i)-cz;
+        c00+=x*x; c11+=y*y; c22+=z*z; c01+=x*y; c02+=x*z; c12+=y*z;
+    }
+    let A = [c00,c01,c02, c01,c11,c12, c02,c12,c22];
+    let V = [1,0,0, 0,1,0, 0,0,1]; // columns accumulate eigenvectors
+
+    // Jacobi iterations
+    for (let iter = 0; iter < 50; iter++) {
+        let p=0, q=1, best=Math.abs(A[1]);
+        if (Math.abs(A[2]) > best) { p=0; q=2; best=Math.abs(A[2]); }
+        if (Math.abs(A[5]) > best) { p=1; q=2; best=Math.abs(A[5]); }
+        if (best < 1e-12) break;
+
+        const app=A[3*p+p], aqq=A[3*q+q], apq=A[3*p+q];
+        const ang = 0.5 * Math.atan2(2*apq, app - aqq);
+        const c = Math.cos(ang), s = Math.sin(ang);
+
+        const nA = [...A];
+        nA[3*p+p] =  c*c*app + 2*s*c*apq + s*s*aqq;
+        nA[3*q+q] =  s*s*app - 2*s*c*apq + c*c*aqq;
+        nA[3*p+q] =  nA[3*q+p] = 0;
+        for (let r = 0; r < 3; r++) {
+            if (r===p || r===q) continue;
+            nA[3*r+p] = nA[3*p+r] =  c*A[3*r+p] + s*A[3*r+q];
+            nA[3*r+q] = nA[3*q+r] = -s*A[3*r+p] + c*A[3*r+q];
+        }
+        A = nA;
+
+        const nV = [...V];
+        for (let r = 0; r < 3; r++) {
+            nV[3*r+p] =  c*V[3*r+p] + s*V[3*r+q];
+            nV[3*r+q] = -s*V[3*r+p] + c*V[3*r+q];
+        }
+        V = nV;
+    }
+
+    // Project vertices onto each principal axis and measure extent
+    const dims = [0,1,2].map(k => {
+        const ax=V[k], ay=V[3+k], az=V[6+k];
+        let lo=Infinity, hi=-Infinity;
+        for (let i = 0; i < n; i++) {
+            const t = (pos.getX(i)-cx)*ax + (pos.getY(i)-cy)*ay + (pos.getZ(i)-cz)*az;
+            if (t < lo) lo = t;
+            if (t > hi) hi = t;
+        }
+        return hi - lo;
+    });
+
+    return dims.sort((a, b) => b - a); // [L, W, T] largest → smallest
+}
+
+function showInfo(entry) {
+    infoName.textContent = entry.name.trim() || '(unnamed)';
+    infoType.textContent = entry.type;
+
+    // OBB via PCA: find principal axes of the vertex cloud, measure extents along
+    // each axis — gives true L/W/T regardless of how the part is oriented in the scene.
+    const geo = entry.obj.geometry;
+    let rx = 0, ry = 0, rz = 0;
+    if (geo) [rx, ry, rz] = computeOBBSize(geo);
+
+    dimX.textContent   = rx.toFixed(3);  dimXFrac.textContent = inToFrac(rx);  dimXFt.textContent = inToFtIn(rx);
+    dimY.textContent   = ry.toFixed(3);  dimYFrac.textContent = inToFrac(ry);  dimYFt.textContent = inToFtIn(ry);
+    dimZ.textContent   = rz.toFixed(3);  dimZFrac.textContent = inToFrac(rz);  dimZFt.textContent = inToFtIn(rz);
+
+    const vol = computeVolume(entry.obj);
+    if (vol !== null) {
+        volIn3El.textContent = vol.toFixed(3);
+        volFt3El.textContent = (vol / 1728).toFixed(4);
+        volSection.style.display = '';
+    } else {
+        volSection.style.display = 'none';
+    }
+
+    infoPanel.classList.add('visible');
+}
+
+function hideInfo() {
+    infoPanel.classList.remove('visible');
+    infoName.textContent = '—';
+    infoType.textContent = '';
+    dimX.textContent   = dimY.textContent   = dimZ.textContent   = '—';
+    dimXFrac.textContent = dimYFrac.textContent = dimZFrac.textContent = '';
+    dimXFt.textContent  = dimYFt.textContent  = dimZFt.textContent  = '';
+    volSection.style.display = 'none';
+    volIn3El.textContent = volFt3El.textContent = '—';
+}
+
+function deselect() {
+    selectedObj = null;
+    applySelection(null);
+    hideInfo();
+}
+
+// ── Click / select / drag ─────────────────────────────────────────────────
+// Cursor is projected onto a plane perpendicular to the camera that passes
+// through the object's world position. The resulting world delta is converted
+// to the parent group's local space, giving natural movement on all three axes
+// depending on camera orientation.
+
+let pointerDownAt = { x: 0, y: 0 };
+let dragState     = null;  // { obj, entry, wasSelected, startLocalPos, dragPlane, dragPlaneHit, parentQuat }
+let isDragging    = false;
+
+function hitTest(clientX, clientY) {
+    const visible = activeModel
+        ? selectables.filter(s => s.modelGroup === activeModel.group)
+        : [];
+    if (visible.length === 0) return null;
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x =  ((clientX - rect.left) / rect.width)  * 2 - 1;
+    mouse.y = -((clientY - rect.top)  / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(visible.map(s => s.obj), false);
+    // Return both the object and the world-space surface point
+    return hits.length ? { obj: hits[0].object, point: hits[0].point } : null;
+}
+
+renderer.domElement.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    pointerDownAt = { x: e.clientX, y: e.clientY };
+    dragState     = null;
+    isDragging    = false;
+
+    const result = hitTest(e.clientX, e.clientY);
+    if (!result) return;
+
+    const { obj: hit, point: hitPoint } = result;
+    const entry       = selectables.find(s => s.obj === hit);
+    const wasSelected = hit === selectedObj;
+
+    if (!wasSelected && entry) selectEntry(entry);
+
+    // Drag plane through the exact surface click point, perpendicular to camera.
+    // Using the surface point (not the object pivot) means the grabbed spot stays
+    // pinned to the cursor with no parallax drift.
+    const planeNormal = new THREE.Vector3();
+    camera.getWorldDirection(planeNormal);
+    const dragPlane    = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, hitPoint);
+    const dragPlaneHit = hitPoint.clone(); // cursor is exactly on the plane at press time
+
+    const startWorldPos = new THREE.Vector3();
+    hit.getWorldPosition(startWorldPos);
+
+    dragState = {
+        obj: hit, entry, wasSelected,
+        startLocalPos: hit.position.clone(),
+        startWorldPos,
+        dragPlane, dragPlaneHit,
+    };
+
+    controls.enabled = false;
+    renderer.domElement.style.cursor = 'grabbing';
+});
+
+renderer.domElement.addEventListener('pointermove', e => {
+    if (!dragState || !(e.buttons & 1)) return;
+
+    const dx = e.clientX - pointerDownAt.x;
+    const dy = e.clientY - pointerDownAt.y;
+    if (!isDragging && Math.hypot(dx, dy) > 5) isDragging = true;
+    if (!isDragging) return;
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+    mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+
+    const currentHit = new THREE.Vector3();
+    if (!raycaster.ray.intersectPlane(dragState.dragPlane, currentHit)) return;
+
+    // Move object pivot by the same world delta the cursor moved on the plane.
+    // worldToLocal handles any parent rotation/scale without manual decomposition.
+    const worldDelta = currentHit.clone().sub(dragState.dragPlaneHit);
+    const newWorldPos = dragState.startWorldPos.clone().add(worldDelta);
+    dragState.obj.parent.worldToLocal(newWorldPos);
+    dragState.obj.position.copy(newWorldPos);
+});
+
+renderer.domElement.addEventListener('pointerup', e => {
+    if (e.button !== 0) return;
+    controls.enabled = true;
+    renderer.domElement.style.cursor = '';
+
+    const moved = Math.hypot(e.clientX - pointerDownAt.x, e.clientY - pointerDownAt.y) > 5;
+
+    if (dragState) {
+        if (!isDragging) {
+            // Pure click: toggle selection if this object was already selected
+            if (dragState.wasSelected) deselect();
+        }
+        dragState  = null;
+        isDragging = false;
+    } else if (!moved) {
+        // Clicked empty space → deselect
+        deselect();
+    }
+});
+
+// ── Mobile sidebar ────────────────────────────────────────────────────────
+function openSidebar() {
+    sidebar.classList.add('open');
+    sidebarOverlay.classList.add('active');
+}
+function closeSidebar() {
+    sidebar.classList.remove('open');
+    sidebarOverlay.classList.remove('active');
+}
+menuBtn.addEventListener('click', () => {
+    sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+});
+sidebarOverlay.addEventListener('click', closeSidebar);
+
+// ── Touch hint ────────────────────────────────────────────────────────────
+if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
+    const hint = document.getElementById('hint');
+    if (hint) hint.innerHTML =
+        'Orbit · One finger drag<br>Pan · Two finger drag<br>Zoom · Pinch<br>Select · Tap';
+}
+
+// ── File input ────────────────────────────────────────────────────────────
+openBtn.addEventListener('click',  () => fileInput.click());
+
+resetBtn.addEventListener('click', () => {
+    selectables.forEach(({ obj, origPos }) => obj.position.copy(origPos));
+    deselect();
+});
+fileInput.addEventListener('change', e => {
+    if (e.target.files[0]) loadFile(e.target.files[0]);
+    fileInput.value = '';
+});
+
+// ── Drag & drop ───────────────────────────────────────────────────────────
+let dragDepth = 0;
+
+window.addEventListener('dragenter', e => {
+    e.preventDefault();
+    if (++dragDepth === 1) dropOverlay.classList.add('active');
+});
+window.addEventListener('dragleave', () => {
+    if (--dragDepth === 0) dropOverlay.classList.remove('active');
+});
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => {
+    e.preventDefault();
+    dragDepth = 0;
+    dropOverlay.classList.remove('active');
+    loadFile(e.dataTransfer.files[0]);
+});
+</script>
+</body>
+</html>
