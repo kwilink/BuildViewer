@@ -733,7 +733,13 @@ function computeOBBFull(obj) {
 
 function hideDimensions() {
     if (!dimGroup) return;
-    dimGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    dimGroup.traverse(o => {
+        if (o.geometry) o.geometry.dispose();
+        // CSS2DRenderer caches DOM nodes; remove them explicitly so they don't linger.
+        if (o.isCSS2DObject && o.element && o.element.parentNode) {
+            o.element.parentNode.removeChild(o.element);
+        }
+    });
     if (dimGroup.userData.mats) dimGroup.userData.mats.forEach(m => m.dispose());
     scene.remove(dimGroup);
     dimGroup = null;
