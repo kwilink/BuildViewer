@@ -76,6 +76,29 @@
       font-size: 9px; color: #884400; opacity: 0.85;
       margin-left: 4px;
     }
+    .obj-group-header {
+      padding: 4px 10px 4px 24px; font-size: 11px; color: #884400;
+      cursor: pointer; display: flex; align-items: center;
+      transition: background 0.1s, color 0.1s;
+    }
+    .obj-group-header:hover { background: rgba(255,102,0,0.08); color: #cc4400; }
+    .obj-toggle {
+      font-size: 8px; margin-right: 5px; display: inline-block;
+      transition: transform 0.15s; flex-shrink: 0;
+    }
+    .obj-toggle.open { transform: rotate(90deg); }
+    .obj-sublist { list-style: none; display: none; }
+    .obj-sublist.open { display: block; }
+    .obj-subitem {
+      padding: 3px 10px 3px 38px; font-size: 10px; color: #884400;
+      cursor: pointer; transition: background 0.1s, color 0.1s;
+      display: flex; align-items: center;
+    }
+    .obj-subitem:hover { background: rgba(255,102,0,0.08); color: #cc4400; }
+    .obj-subitem.selected {
+      background: rgba(255,102,0,0.18); color: #ff6600; font-weight: 600;
+      border-left: 2px solid #ff6600; padding-left: 36px;
+    }
 
     /* ── Toolbar ─────────────────────────────────────────────────────────── */
     #toolbar {
@@ -609,25 +632,64 @@ function addModelToSidebar(filename, entries) {
     });
 
     groups.forEach((groupEntries, name) => {
-        const li = document.createElement('li');
-        li.className = 'obj-item';
-        if (groupEntries.length > 1) {
+        if (groupEntries.length === 1) {
+            // Single part — plain row, no dropdown
+            const entry = groupEntries[0];
+            const li = document.createElement('li');
+            li.className = 'obj-item';
+            const vol = computeVolume(entry.obj);
+            li.innerHTML = name + (vol !== null
+                ? `<span class="obj-vol">${vol.toFixed(2)} in³</span>` : '');
+            li.title = name;
+            li.addEventListener('click', () => { selectEntry(entry); closeSidebar(); });
+            entry.sidebarEl = li;
+            list.appendChild(li);
+        } else {
+            // Multiple parts with same name — collapsible group
             let totalVol = 0;
-            groupEntries.forEach(e => {
+            const vols = groupEntries.map(e => {
                 const v = computeVolume(e.obj);
                 if (v !== null) totalVol += v;
+                return v;
             });
-            li.innerHTML =
-                `${name}` +
+
+            const groupLi = document.createElement('li');
+
+            // Group header
+            const header = document.createElement('div');
+            header.className = 'obj-group-header';
+            const arrow = document.createElement('span');
+            arrow.className = 'obj-toggle';
+            arrow.textContent = '▶';
+            header.appendChild(arrow);
+            header.insertAdjacentHTML('beforeend',
+                `<span>${name}</span>` +
                 `<span class="obj-count">×${groupEntries.length}</span>` +
-                `<span class="obj-vol">${totalVol.toFixed(2)} in³</span>`;
-        } else {
-            li.textContent = name;
+                `<span class="obj-vol">${totalVol.toFixed(2)} in³</span>`);
+
+            // Sub-list
+            const sublist = document.createElement('ul');
+            sublist.className = 'obj-sublist';
+
+            header.addEventListener('click', () => {
+                const open = sublist.classList.toggle('open');
+                arrow.classList.toggle('open', open);
+            });
+
+            groupEntries.forEach((entry, i) => {
+                const subli = document.createElement('li');
+                subli.className = 'obj-subitem';
+                subli.innerHTML = name + (vols[i] !== null
+                    ? `<span class="obj-vol">${vols[i].toFixed(2)} in³</span>` : '');
+                subli.addEventListener('click', () => { selectEntry(entry); closeSidebar(); });
+                entry.sidebarEl = subli;
+                sublist.appendChild(subli);
+            });
+
+            groupLi.appendChild(header);
+            groupLi.appendChild(sublist);
+            list.appendChild(groupLi);
         }
-        li.title = name;
-        li.addEventListener('click', () => { selectEntry(groupEntries[0]); closeSidebar(); });
-        groupEntries.forEach(e => { e.sidebarEl = li; });
-        list.appendChild(li);
     });
 
     modelDiv.appendChild(list);
