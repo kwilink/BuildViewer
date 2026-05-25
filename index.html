@@ -1164,6 +1164,9 @@ renderer.domElement.addEventListener('pointermove', e => {
     const newWorldPos = dragState.startWorldPos.clone().add(worldDelta);
     dragState.obj.parent.worldToLocal(newWorldPos);
     dragState.obj.position.copy(newWorldPos);
+
+    // Translate dim lines by the same world delta so they stay locked to the object.
+    if (dimGroup) dimGroup.position.copy(worldDelta);
 });
 
 renderer.domElement.addEventListener('pointerup', e => {
