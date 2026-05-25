@@ -68,6 +68,14 @@
       background: rgba(255,102,0,0.18); color: #ff6600; font-weight: 600;
       border-left: 2px solid #ff6600; padding-left: 22px;
     }
+    .obj-count {
+      font-size: 9px; color: #ff6600; opacity: 0.7;
+      margin-left: 4px; font-weight: 600;
+    }
+    .obj-vol {
+      font-size: 9px; color: #884400; opacity: 0.85;
+      margin-left: 4px;
+    }
 
     /* ── Toolbar ─────────────────────────────────────────────────────────── */
     #toolbar {
@@ -592,13 +600,33 @@ function addModelToSidebar(filename, entries) {
     const list = document.createElement('ul');
     list.className = 'obj-list';
 
+    // Group entries by name; duplicates share one row showing count + total volume
+    const groups = new Map();
     entries.forEach(entry => {
+        const key = entry.name.trim() || '(unnamed)';
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(entry);
+    });
+
+    groups.forEach((groupEntries, name) => {
         const li = document.createElement('li');
         li.className = 'obj-item';
-        li.textContent = entry.name.trim() || '(unnamed)';
-        li.title = li.textContent;
-        li.addEventListener('click', () => { selectEntry(entry); closeSidebar(); });
-        entry.sidebarEl = li;
+        if (groupEntries.length > 1) {
+            let totalVol = 0;
+            groupEntries.forEach(e => {
+                const v = computeVolume(e.obj);
+                if (v !== null) totalVol += v;
+            });
+            li.innerHTML =
+                `${name}` +
+                `<span class="obj-count">×${groupEntries.length}</span>` +
+                `<span class="obj-vol">${totalVol.toFixed(2)} in³</span>`;
+        } else {
+            li.textContent = name;
+        }
+        li.title = name;
+        li.addEventListener('click', () => { selectEntry(groupEntries[0]); closeSidebar(); });
+        groupEntries.forEach(e => { e.sidebarEl = li; });
         list.appendChild(li);
     });
 
