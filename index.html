@@ -521,6 +521,10 @@ const loader = new Rhino3dmLoader();
 // rhino3dm WASM — pin to a version known to work with three@0.168.0
 loader.setLibraryPath('https://cdn.jsdelivr.net/npm/rhino3dm@8.6.1/');
 
+// Shared rhino3dm WASM module (loaded lazily for BREP edge extraction)
+let _rh = null;
+const _brepEdgeMap = new Map(); // object GUID → [{type,start?,end?,radius?,pts}]
+
 // ── Resize ────────────────────────────────────────────────────────────────
 function onResize() {
     const w = viewport.clientWidth;
@@ -591,6 +595,8 @@ function loadFile(file) {
             addModelToSidebar(file.name, modelSelectables);  // sets newModelEntry.headerEl
             setActiveModel(newModelEntry);
             resetBtn.style.display = '';
+            // Extract exact BREP edges in background for accurate measurements
+            _extractFileBrepEdges(file);
         },
         undefined,
         (err) => {
@@ -601,6 +607,101 @@ function loadFile(file) {
             alert('Could not parse the .3dm file.\n\nMake sure it is a valid Rhino 8 file and try again.');
         }
     );
+}
+
+// ── BREP edge extraction (rhino3dm WASM) ──────────────────────────────────
+async function _ensureRhino3dm() {
+    if (_rh) return _rh;
+    if (!window.rhino3dm) {
+        await new Promise((res, rej) => {
+            const s = document.createElement('script');
+            s.src = 'https://cdn.jsdelivr.net/npm/rhino3dm@8.6.1/rhino3dm.js';
+            s.onload = res;
+            s.onerror = () => rej(new Error('rhino3dm script failed'));
+            document.head.appendChild(s);
+        });
+    }
+    _rh = await window.rhino3dm({
+        locateFile: f => `https://cdn.jsdelivr.net/npm/rhino3dm@8.6.1/${f}`
+    });
+    return _rh;
+}
+
+async function _extractFileBrepEdges(file) {
+    let rh;
+    try { rh = await _ensureRhino3dm(); } catch(e) {
+        console.warn('BREP extraction unavailable:', e); return;
+    }
+    let buf;
+    try { buf = await file.arrayBuffer(); } catch(e) { return; }
+    let doc;
+    try { doc = rh.File3dm.fromByteArray(new Uint8Array(buf)); } catch(e) { return; }
+
+    const objs = doc.objects();
+    for (let i = 0; i < objs.count; i++) {
+        const obj  = objs.get(i);
+        const attr = obj.attributes();
+        const guid = attr.id;
+        attr.delete();
+        const geom = obj.geometry();
+        if (geom && geom instanceof rh.Brep) {
+            try {
+                const edges = _readBrepEdges(rh, geom);
+                if (edges.length) _brepEdgeMap.set(guid, edges);
+            } catch(_) {}
+        }
+        if (geom) geom.delete();
+        obj.delete();
+    }
+    objs.delete();
+    doc.delete();
+}
+
+function _readBrepEdges(rh, brep) {
+    const out = [];
+    const edgeList = brep.edges;
+    for (let e = 0; e < edgeList.count; e++) {
+        const edge = edgeList.get(e);
+        try { out.push(_classifyEdgeSamples(edge)); } catch(_) {}
+        edge.delete();
+    }
+    return out;
+}
+
+function _edgePt(edge, t) {
+    const p = edge.pointAt(t);
+    const v = new THREE.Vector3(p.x, p.y, p.z);
+    try { p.delete(); } catch(_) {}
+    return v;
+}
+
+function _classifyEdgeSamples(edge) {
+    const d  = edge.domain;
+    const N  = 16;
+    const pts = [];
+    for (let k = 0; k <= N; k++) pts.push(_edgePt(edge, d.min + (d.max - d.min) * k / N));
+
+    // Straight test: every intermediate point within 0.05% of chord length from the chord
+    const chord = pts[N].clone().sub(pts[0]);
+    const chordLen = chord.length();
+    if (chordLen > 1e-10) {
+        const dir = chord.clone().divideScalar(chordLen);
+        let straight = true;
+        for (let k = 1; k < N; k++) {
+            const off  = pts[k].clone().sub(pts[0]);
+            const perp = off.clone().sub(dir.clone().multiplyScalar(off.dot(dir)));
+            if (perp.length() > chordLen * 0.0005) { straight = false; break; }
+        }
+        if (straight) return { type: 'line', start: pts[0], end: pts[N] };
+    }
+
+    // Arc test: circumradii from two independent triplets agree within 0.5%
+    const r0 = _fitCircle3D([pts[0], pts[Math.floor(N/3)],  pts[Math.floor(2*N/3)]]);
+    const r1 = _fitCircle3D([pts[Math.floor(N/6)], pts[Math.floor(N/2)], pts[N]]);
+    if (r0 > 1e-6 && r1 > 1e-6 && Math.abs(r0 - r1) / r0 < 0.005)
+        return { type: 'arc', radius: (r0 + r1) * 0.5, pts };
+
+    return { type: 'nurbs', pts };
 }
 
 function layerColorFor(child) {
@@ -1343,6 +1444,7 @@ let _isoEdgeLines = null, _isoHoverLine = null, _isoPendingLine = null, _isoMeas
 let _isoHoveredSeg = -1, _isoPendingSeg = -1, _isoMaxDim = 1;
 let _isoDimLabel = null;
 let _isoVtxMap = null;      // vertex-key → [segIdx, …] adjacency built per isolated view
+let _isoExactEdges = null; // exact BREP edges transformed to isolated-view space
 // Drag detection: track pointer down position per pointerId
 const _isoDragMap = new Map();
 
@@ -1386,6 +1488,13 @@ function openIsolatedView(entry) {
     _isoEdgeLines.renderOrder = 1;
     _isoScene.add(_isoEdgeLines);
     _isoBuildVtxMap();
+
+    // Build exact BREP edge list for this part if extraction has already finished
+    const _partGuid = entry.obj.userData?.attributes?.id;
+    const _rawEdges = _partGuid ? _brepEdgeMap.get(_partGuid) : null;
+    if (_rawEdges) {
+        _isoExactEdges = _rawEdges.map(e => _transformExactEdge(e, entry.obj.matrixWorld, ctr));
+    }
 
     // Three overlay lines: hover (white), pending/confirm (yellow), measured (bright orange)
     const mkOverlayLine = (color) => {
@@ -1458,6 +1567,65 @@ function openIsolatedView(entry) {
     _isoRenderer.domElement.addEventListener('pointerup',   _isoOnUp);
 
     overlay.classList.add('open');
+}
+
+// ── Exact BREP edge helpers ───────────────────────────────────────────────
+
+// Apply matrixWorld + centering to a single raw BREP edge (Rhino-space coordinates)
+function _transformPt(p, mw, ctr) {
+    return p.clone().applyMatrix4(mw).sub(ctr);
+}
+function _transformExactEdge(e, mw, ctr) {
+    if (e.type === 'line') {
+        return { type: 'line',
+            start:  _transformPt(e.start, mw, ctr),
+            end:    _transformPt(e.end,   mw, ctr) };
+    }
+    const pts = e.pts.map(p => _transformPt(p, mw, ctr));
+    if (e.type === 'arc') return { type: 'arc', radius: e.radius, pts };
+    return { type: 'nurbs', pts };
+}
+
+// Point-to-line-segment distance in 3D
+function _ptSegDist3D(pt, a, b) {
+    const ab = b.clone().sub(a);
+    const len2 = ab.dot(ab);
+    if (len2 < 1e-20) return pt.distanceTo(a);
+    const t = Math.max(0, Math.min(1, pt.clone().sub(a).dot(ab) / len2));
+    return pt.distanceTo(a.clone().addScaledVector(ab, t));
+}
+
+// Closest distance from a 3D point to an exact edge (via sampled points for curves)
+function _exactEdgeDist3D(edge, pt) {
+    if (edge.type === 'line') return _ptSegDist3D(pt, edge.start, edge.end);
+    let best = Infinity;
+    for (let i = 0; i < edge.pts.length - 1; i++) {
+        const d = _ptSegDist3D(pt, edge.pts[i], edge.pts[i + 1]);
+        if (d < best) best = d;
+    }
+    return best;
+}
+
+// Return the exact BREP edge closest to the midpoint of tessellated segment segIdx,
+// or null if exact data is unavailable / no edge is close enough.
+function _isoNearestExactEdge(segIdx) {
+    if (!_isoExactEdges) return null;
+    const [va, vb] = _isoEdgePts(segIdx);
+    const mid = va.clone().lerp(vb, 0.5);
+    let bestDist = _isoMaxDim * 0.05; // must be within 5% of part size
+    let best = null;
+    for (const e of _isoExactEdges) {
+        const d = _exactEdgeDist3D(e, mid);
+        if (d < bestDist) { bestDist = d; best = e; }
+    }
+    return best;
+}
+
+// Arc length of a nurbs edge (sum of chord lengths between sampled points)
+function _arcLength(pts) {
+    let len = 0;
+    for (let i = 1; i < pts.length; i++) len += pts[i].distanceTo(pts[i - 1]);
+    return len;
 }
 
 // ── Edge analysis (straight merge + arc radius) ───────────────────────────
@@ -1645,7 +1813,7 @@ function _isoAskConfirm(segIdx) {
     document.getElementById('iso-confirm-panel').classList.toggle('visible', segIdx >= 0);
 }
 
-// Step 2a: user confirmed → analyze edge, show dimension
+// Step 2a: user confirmed → measure edge (exact BREP when available, tessellation fallback)
 function _isoConfirmYes() {
     if (_isoPendingSeg < 0) return;
     const segIdx = _isoPendingSeg;
@@ -1659,33 +1827,64 @@ function _isoConfirmYes() {
         _isoDimLabel = null;
     }
 
-    const result = _isoAnalyzeEdge(segIdx);
-    if (!result) return;
-
     let labelVal, midPt;
-    if (result.type === 'straight') {
-        // Orange line spans the full merged straight edge
-        _isoSetLinePts(_isoMeasuredLine, result.start, result.end);
-        const len = result.length;
-        document.getElementById('iso-edge-val').textContent  = len.toFixed(3) + '"';
-        document.getElementById('iso-edge-frac').textContent = inToFrac(len);
-        document.getElementById('iso-edge-ft').textContent   = inToFtIn(len);
-        midPt    = result.start.clone().lerp(result.end, 0.5);
-        labelVal = inToFrac(len);
+
+    // ── Exact BREP measurement (preferred) ──
+    const exactEdge = _isoNearestExactEdge(segIdx);
+    if (exactEdge) {
+        if (exactEdge.type === 'line') {
+            const len = exactEdge.start.distanceTo(exactEdge.end);
+            _isoSetLinePts(_isoMeasuredLine, exactEdge.start, exactEdge.end);
+            document.getElementById('iso-edge-val').textContent  = len.toFixed(3) + '"';
+            document.getElementById('iso-edge-frac').textContent = inToFrac(len);
+            document.getElementById('iso-edge-ft').textContent   = inToFtIn(len);
+            midPt    = exactEdge.start.clone().lerp(exactEdge.end, 0.5);
+            labelVal = inToFrac(len);
+        } else if (exactEdge.type === 'arc') {
+            _isoSetLine(_isoMeasuredLine, segIdx);
+            const r = exactEdge.radius;
+            document.getElementById('iso-edge-val').textContent  = 'R ' + r.toFixed(3) + '"';
+            document.getElementById('iso-edge-frac').textContent = 'R ' + inToFrac(r);
+            document.getElementById('iso-edge-ft').textContent   = 'R ' + inToFtIn(r);
+            const pts = exactEdge.pts;
+            midPt    = pts[Math.floor(pts.length / 2)].clone();
+            labelVal = 'R ' + inToFrac(r);
+        } else {
+            // NurbsCurve: show arc length
+            _isoSetLine(_isoMeasuredLine, segIdx);
+            const len = _arcLength(exactEdge.pts);
+            document.getElementById('iso-edge-val').textContent  = '~ ' + len.toFixed(3) + '"';
+            document.getElementById('iso-edge-frac').textContent = '~ ' + inToFrac(len);
+            document.getElementById('iso-edge-ft').textContent   = '~ ' + inToFtIn(len);
+            const pts = exactEdge.pts;
+            midPt    = pts[Math.floor(pts.length / 2)].clone();
+            labelVal = '~ ' + inToFrac(len);
+        }
     } else {
-        // Arc: orange stays on the clicked segment; display radius
-        _isoSetLine(_isoMeasuredLine, segIdx);
-        const r = result.radius;
-        document.getElementById('iso-edge-val').textContent  = 'R ' + r.toFixed(3) + '"';
-        document.getElementById('iso-edge-frac').textContent = 'R ' + inToFrac(r);
-        document.getElementById('iso-edge-ft').textContent   = 'R ' + inToFtIn(r);
-        const [v0, v1] = _isoEdgePts(segIdx);
-        midPt    = v0.clone().lerp(v1, 0.5);
-        labelVal = 'R ' + inToFrac(r);
+        // ── Tessellation fallback ──
+        const result = _isoAnalyzeEdge(segIdx);
+        if (!result) return;
+        if (result.type === 'straight') {
+            _isoSetLinePts(_isoMeasuredLine, result.start, result.end);
+            const len = result.length;
+            document.getElementById('iso-edge-val').textContent  = len.toFixed(3) + '"';
+            document.getElementById('iso-edge-frac').textContent = inToFrac(len);
+            document.getElementById('iso-edge-ft').textContent   = inToFtIn(len);
+            midPt    = result.start.clone().lerp(result.end, 0.5);
+            labelVal = inToFrac(len);
+        } else {
+            _isoSetLine(_isoMeasuredLine, segIdx);
+            const r = result.radius;
+            document.getElementById('iso-edge-val').textContent  = 'R ' + r.toFixed(3) + '"';
+            document.getElementById('iso-edge-frac').textContent = 'R ' + inToFrac(r);
+            document.getElementById('iso-edge-ft').textContent   = 'R ' + inToFtIn(r);
+            const [v0, v1] = _isoEdgePts(segIdx);
+            midPt    = v0.clone().lerp(v1, 0.5);
+            labelVal = 'R ' + inToFrac(r);
+        }
     }
 
     document.getElementById('iso-edge-dim').classList.add('visible');
-
     const div = document.createElement('div');
     div.className   = 'dim-label-3d';
     div.textContent = labelVal;
@@ -1728,7 +1927,7 @@ function _cleanupIso() {
     if (_isoControls) { _isoControls.dispose(); _isoControls = null; }
     _isoDimLabel = null;
     _isoEdgeLines = null; _isoHoverLine = null; _isoPendingLine = null; _isoMeasuredLine = null;
-    _isoPendingSeg = -1; _isoHoveredSeg = -1; _isoVtxMap = null;
+    _isoPendingSeg = -1; _isoHoveredSeg = -1; _isoVtxMap = null; _isoExactEdges = null;
     _isoDragMap.clear();
     const container = document.getElementById('iso-viewport');
     const hint = document.getElementById('iso-dbl-hint');
