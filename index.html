@@ -1458,26 +1458,51 @@ function openIsolatedView(entry) {
     overlay.classList.add('open');
 }
 
-// Convert ~10 screen pixels → world-unit threshold (scales correctly with zoom)
-function _isoLineThreshold() {
-    const dist   = _isoCamera.position.length() || 1;
-    const halfH  = Math.tan(THREE.MathUtils.degToRad(_isoCamera.fov * 0.5)) * dist;
-    const screenH = (_isoRenderer.domElement.clientHeight || 1);
-    return (halfH / screenH) * 10;
+// 2D screen-space distance from point (px,py) to segment (ax,ay)-(bx,by)
+function _ptSegDist2D(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const lenSq = dx*dx + dy*dy;
+    if (lenSq < 1e-10) return Math.hypot(px - ax, py - ay);
+    const t = Math.max(0, Math.min(1, ((px - ax)*dx + (py - ay)*dy) / lenSq));
+    return Math.hypot(px - ax - t*dx, py - ay - t*dy);
 }
 
+// Project every edge to screen pixels and return the index of the closest one
+// within PIXEL_THRESH pixels. Works at any zoom level or rotation.
 function _isoRaycast(clientX, clientY) {
     if (!_isoRenderer || !_isoEdgeLines) return -1;
-    const rect  = _isoRenderer.domElement.getBoundingClientRect();
-    const mouse = new THREE.Vector2(
-        ((clientX - rect.left) / rect.width)  * 2 - 1,
-        -((clientY - rect.top) / rect.height) * 2 + 1
-    );
-    const ray = new THREE.Raycaster();
-    ray.params.Line = { threshold: _isoLineThreshold() };
-    ray.setFromCamera(mouse, _isoCamera);
-    const hits = ray.intersectObject(_isoEdgeLines, false);
-    return hits.length ? hits[0].faceIndex : -1;
+    const PIXEL_THRESH = 18;
+    const rect = _isoRenderer.domElement.getBoundingClientRect();
+    const cx = clientX - rect.left;
+    const cy = clientY - rect.top;
+    const w  = rect.width;
+    const h  = rect.height;
+
+    const pos      = _isoEdgeLines.geometry.attributes.position;
+    const segCount = pos.count / 2;
+    const va = new THREE.Vector3();
+    const vb = new THREE.Vector3();
+    const mw = _isoEdgeLines.matrixWorld;
+
+    let bestSeg  = -1;
+    let bestDist = PIXEL_THRESH;
+
+    for (let i = 0; i < segCount; i++) {
+        va.fromBufferAttribute(pos, i * 2    ).applyMatrix4(mw).project(_isoCamera);
+        vb.fromBufferAttribute(pos, i * 2 + 1).applyMatrix4(mw).project(_isoCamera);
+
+        // Skip segments entirely behind the near plane
+        if (va.z > 1 && vb.z > 1) continue;
+
+        const ax = (va.x + 1) * 0.5 * w;
+        const ay = (-va.y + 1) * 0.5 * h;
+        const bx = (vb.x + 1) * 0.5 * w;
+        const by = (-vb.y + 1) * 0.5 * h;
+
+        const d = _ptSegDist2D(cx, cy, ax, ay, bx, by);
+        if (d < bestDist) { bestDist = d; bestSeg = i; }
+    }
+    return bestSeg;
 }
 
 function _isoEdgePts(segIdx) {
