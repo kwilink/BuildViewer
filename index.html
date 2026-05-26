@@ -1342,6 +1342,7 @@ let _isoLabelRenderer = null, _isoResizeObs = null, _isoAnimId = null;
 let _isoEdgeLines = null, _isoHoverLine = null, _isoPendingLine = null, _isoMeasuredLine = null;
 let _isoHoveredSeg = -1, _isoPendingSeg = -1, _isoMaxDim = 1;
 let _isoDimLabel = null;
+let _isoVtxMap = null;      // vertex-key → [segIdx, …] adjacency built per isolated view
 // Drag detection: track pointer down position per pointerId
 const _isoDragMap = new Map();
 
@@ -1384,6 +1385,7 @@ function openIsolatedView(entry) {
         new THREE.LineBasicMaterial({ color: 0xaa5500, depthTest: false }));
     _isoEdgeLines.renderOrder = 1;
     _isoScene.add(_isoEdgeLines);
+    _isoBuildVtxMap();
 
     // Three overlay lines: hover (white), pending/confirm (yellow), measured (bright orange)
     const mkOverlayLine = (color) => {
@@ -1456,6 +1458,113 @@ function openIsolatedView(entry) {
     _isoRenderer.domElement.addEventListener('pointerup',   _isoOnUp);
 
     overlay.classList.add('open');
+}
+
+// ── Edge analysis (straight merge + arc radius) ───────────────────────────
+function _isoVtxKey(v) {
+    return `${v.x.toFixed(4)},${v.y.toFixed(4)},${v.z.toFixed(4)}`;
+}
+function _isoSegPt(si, ep) {
+    return new THREE.Vector3().fromBufferAttribute(
+        _isoEdgeLines.geometry.attributes.position, si * 2 + ep);
+}
+function _isoBuildVtxMap() {
+    _isoVtxMap = new Map();
+    const pos  = _isoEdgeLines.geometry.attributes.position;
+    const nSeg = pos.count / 2;
+    for (let i = 0; i < nSeg; i++) {
+        for (let ep = 0; ep < 2; ep++) {
+            const k = _isoVtxKey(new THREE.Vector3().fromBufferAttribute(pos, i * 2 + ep));
+            if (!_isoVtxMap.has(k)) _isoVtxMap.set(k, []);
+            _isoVtxMap.get(k).push(i);
+        }
+    }
+}
+
+// Circumradius of 3 well-separated points = radius of circle through them (Heron's formula)
+function _fitCircle3D(pts) {
+    if (pts.length < 3) return 0;
+    const p0 = pts[0], p1 = pts[Math.floor(pts.length / 2)], p2 = pts[pts.length - 1];
+    const a = p1.distanceTo(p2), b = p0.distanceTo(p2), c = p0.distanceTo(p1);
+    const s = (a + b + c) / 2;
+    const area2 = s * (s - a) * (s - b) * (s - c);
+    if (area2 <= 0) return 0;
+    return (a * b * c) / (4 * Math.sqrt(area2));
+}
+
+// Update a highlight line from two explicit points (not a segment index)
+function _isoSetLinePts(line, a, b) {
+    const posAttr = line.geometry.attributes.position;
+    posAttr.setXYZ(0, a.x, a.y, a.z);
+    posAttr.setXYZ(1, b.x, b.y, b.z);
+    posAttr.needsUpdate = true;
+    line.geometry.computeBoundingSphere();
+    line.visible = true;
+}
+
+// Walk from vtxKey along connected segments while continueFn(prevDir, nextDir) is true.
+// Returns array of far-end points reached (not including the starting vertex).
+function _isoWalk(startVtxKey, prevSeg, outDir, continueFn) {
+    const farPts = [];
+    const visited = new Set([prevSeg]);
+    let vKey = startVtxKey, dir = outDir.clone();
+    while (true) {
+        const nn = (_isoVtxMap.get(vKey) || []).filter(s => !visited.has(s));
+        if (nn.length !== 1) break;
+        const si = nn[0];
+        const pa = _isoSegPt(si, 0), pb = _isoSegPt(si, 1);
+        const kaKey = _isoVtxKey(pa), kbKey = _isoVtxKey(pb);
+        const nextVtxKey = kaKey === vKey ? kbKey : kaKey;
+        const farPt      = kaKey === vKey ? pb.clone() : pa.clone();
+        const nextDir    = farPt.clone().sub(kaKey === vKey ? pa : pb).normalize();
+        if (!continueFn(dir, nextDir)) break;
+        visited.add(si);
+        farPts.push(farPt);
+        vKey = nextVtxKey; dir = nextDir;
+    }
+    return farPts;
+}
+
+// Classify the clicked segment and return measurement:
+//   { type:'straight', start, end, length }  — merged collinear segments
+//   { type:'arc',  radius }                  — circular arc
+function _isoAnalyzeEdge(startSeg) {
+    if (!_isoVtxMap || !_isoEdgeLines) return null;
+    const STRAIGHT_COS = 0.9998; // ≈ cos(1°)
+
+    const pa = _isoSegPt(startSeg, 0), pb = _isoSegPt(startSeg, 1);
+    const dir = pb.clone().sub(pa).normalize();
+    const kaKey = _isoVtxKey(pa), kbKey = _isoVtxKey(pb);
+
+    const isStraight = (d, n) => Math.abs(d.dot(n)) >= STRAIGHT_COS;
+
+    // Walk straight in both directions
+    const bwdPts = _isoWalk(kaKey, startSeg, dir.clone().negate(), isStraight);
+    const fwdPts = _isoWalk(kbKey, startSeg, dir.clone(),          isStraight);
+
+    if (bwdPts.length || fwdPts.length) {
+        // Found collinear neighbors → it's part of a longer straight edge
+        const startPt = bwdPts.length ? bwdPts[bwdPts.length - 1] : pa.clone();
+        const endPt   = fwdPts.length ? fwdPts[fwdPts.length - 1] : pb.clone();
+        return { type: 'straight', start: startPt, end: endPt, length: startPt.distanceTo(endPt) };
+    }
+
+    // Check whether non-collinear neighbors exist (arc segments)
+    const hasNeighbors = ((_isoVtxMap.get(kaKey) || []).length > 1) ||
+                         ((_isoVtxMap.get(kbKey) || []).length > 1);
+    if (hasNeighbors) {
+        const isCurve = (d, n) => d.dot(n) > 0; // angle < 90° — same general curve
+        const bwdArc  = _isoWalk(kaKey, startSeg, dir.clone().negate(), isCurve);
+        const fwdArc  = _isoWalk(kbKey, startSeg, dir.clone(),          isCurve);
+        if (bwdArc.length || fwdArc.length) {
+            const allPts = [...bwdArc.reverse(), pa.clone(), pb.clone(), ...fwdArc];
+            const radius = _fitCircle3D(allPts);
+            if (radius > 0) return { type: 'arc', radius };
+        }
+    }
+
+    // Isolated segment → straight
+    return { type: 'straight', start: pa.clone(), end: pb.clone(), length: pa.distanceTo(pb) };
 }
 
 // 2D screen-space distance from point (px,py) to segment (ax,ay)-(bx,by)
@@ -1536,38 +1645,52 @@ function _isoAskConfirm(segIdx) {
     document.getElementById('iso-confirm-panel').classList.toggle('visible', segIdx >= 0);
 }
 
-// Step 2a: user confirmed → show dimension
+// Step 2a: user confirmed → analyze edge, show dimension
 function _isoConfirmYes() {
     if (_isoPendingSeg < 0) return;
     const segIdx = _isoPendingSeg;
     _isoPendingSeg = -1;
-
-    _isoSetLine(_isoPendingLine,  -1);
-    _isoSetLine(_isoMeasuredLine, segIdx);
+    _isoSetLine(_isoPendingLine, -1);
     document.getElementById('iso-confirm-panel').classList.remove('visible');
 
-    // Remove old 3D label
     if (_isoDimLabel) {
         if (_isoDimLabel.element.parentNode) _isoDimLabel.element.parentNode.removeChild(_isoDimLabel.element);
         _isoScene.remove(_isoDimLabel);
         _isoDimLabel = null;
     }
 
-    const [v0, v1] = _isoEdgePts(segIdx);
-    const len = v0.distanceTo(v1);
+    const result = _isoAnalyzeEdge(segIdx);
+    if (!result) return;
 
-    document.getElementById('iso-edge-val').textContent  = len.toFixed(3) + '"';
-    document.getElementById('iso-edge-frac').textContent = inToFrac(len);
-    document.getElementById('iso-edge-ft').textContent   = inToFtIn(len);
+    let labelVal, midPt;
+    if (result.type === 'straight') {
+        // Orange line spans the full merged straight edge
+        _isoSetLinePts(_isoMeasuredLine, result.start, result.end);
+        const len = result.length;
+        document.getElementById('iso-edge-val').textContent  = len.toFixed(3) + '"';
+        document.getElementById('iso-edge-frac').textContent = inToFrac(len);
+        document.getElementById('iso-edge-ft').textContent   = inToFtIn(len);
+        midPt    = result.start.clone().lerp(result.end, 0.5);
+        labelVal = inToFrac(len);
+    } else {
+        // Arc: orange stays on the clicked segment; display radius
+        _isoSetLine(_isoMeasuredLine, segIdx);
+        const r = result.radius;
+        document.getElementById('iso-edge-val').textContent  = 'R ' + r.toFixed(3) + '"';
+        document.getElementById('iso-edge-frac').textContent = 'R ' + inToFrac(r);
+        document.getElementById('iso-edge-ft').textContent   = 'R ' + inToFtIn(r);
+        const [v0, v1] = _isoEdgePts(segIdx);
+        midPt    = v0.clone().lerp(v1, 0.5);
+        labelVal = 'R ' + inToFrac(r);
+    }
+
     document.getElementById('iso-edge-dim').classList.add('visible');
 
-    // Floating 3D label at midpoint
-    const mid = v0.clone().lerp(v1, 0.5);
     const div = document.createElement('div');
     div.className   = 'dim-label-3d';
-    div.textContent = inToFrac(len);
+    div.textContent = labelVal;
     _isoDimLabel = new CSS2DObject(div);
-    _isoDimLabel.position.copy(mid);
+    _isoDimLabel.position.copy(midPt);
     _isoScene.add(_isoDimLabel);
 }
 
@@ -1605,7 +1728,7 @@ function _cleanupIso() {
     if (_isoControls) { _isoControls.dispose(); _isoControls = null; }
     _isoDimLabel = null;
     _isoEdgeLines = null; _isoHoverLine = null; _isoPendingLine = null; _isoMeasuredLine = null;
-    _isoPendingSeg = -1; _isoHoveredSeg = -1;
+    _isoPendingSeg = -1; _isoHoveredSeg = -1; _isoVtxMap = null;
     _isoDragMap.clear();
     const container = document.getElementById('iso-viewport');
     const hint = document.getElementById('iso-dbl-hint');
