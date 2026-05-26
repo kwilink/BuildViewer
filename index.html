@@ -290,6 +290,55 @@
     #empty-state svg { opacity: 0.3; }
     #empty-state p { font-size: 14px; }
     #empty-state.hidden { display: none; }
+
+    /* ── Isolated Part View ──────────────────────────────────────────────── */
+    #iso-overlay {
+      position: fixed; inset: 0; z-index: 800;
+      background: #0e0e0e;
+      display: none; flex-direction: column;
+    }
+    #iso-overlay.open { display: flex; }
+    #iso-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 0 16px; height: 50px; flex-shrink: 0;
+      background: #141414; border-bottom: 1px solid #2a2a2a;
+    }
+    .iso-back-btn {
+      display: flex; align-items: center; gap: 4px;
+      background: none; border: none; cursor: pointer;
+      color: #ff6600; font-size: 14px; font-weight: 500;
+      padding: 8px 0; flex-shrink: 0;
+    }
+    .iso-back-btn svg { width: 20px; height: 20px; }
+    #iso-title {
+      flex: 1; text-align: center;
+      font-size: 14px; font-weight: 600; color: #ff6600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      text-shadow: 0 0 10px #ff660088;
+      margin-right: 68px;
+    }
+    #iso-viewport { flex: 1; position: relative; overflow: hidden; min-height: 0; }
+    #iso-viewport canvas { display: block; }
+    #iso-edge-panel {
+      flex-shrink: 0;
+      background: #141414; border-top: 1px solid #2a2a2a;
+      padding: 14px 20px; padding-bottom: max(14px, env(safe-area-inset-bottom));
+      min-height: 68px; display: flex; flex-direction: column; justify-content: center;
+    }
+    .iso-edge-hint { font-size: 12px; color: #553300; text-align: center; }
+    #iso-edge-dim { display: none; }
+    #iso-edge-dim.visible { display: block; }
+    .iso-edge-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+      color: #cc4400; margin-bottom: 4px;
+    }
+    .iso-edge-value { font-size: 22px; font-weight: 500; color: #ff6600; text-shadow: 0 0 10px #ff660088; }
+    .iso-edge-frac  { font-size: 14px; color: #cc4400; margin-left: 6px; }
+    .iso-edge-ft    { font-size: 12px; color: #884400; margin-left: 6px; }
+    .iso-dbl-hint {
+      position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
+      font-size: 11px; color: #553300; pointer-events: none; white-space: nowrap;
+    }
   </style>
 </head>
 <body>
@@ -1189,6 +1238,28 @@ renderer.domElement.addEventListener('pointerup', e => {
     }
 });
 
+// ── Double-click / double-tap → isolated view ─────────────────────────────
+renderer.domElement.addEventListener('dblclick', e => {
+    const result = hitTest(e.clientX, e.clientY);
+    if (!result) return;
+    const entry = selectables.find(s => s.obj === result.obj);
+    if (entry && entry.obj.isMesh) openIsolatedView(entry);
+});
+
+let _lastTap = 0;
+renderer.domElement.addEventListener('touchend', e => {
+    const now = Date.now();
+    if (now - _lastTap < 320 && e.changedTouches.length === 1) {
+        const t = e.changedTouches[0];
+        const result = hitTest(t.clientX, t.clientY);
+        if (result) {
+            const entry = selectables.find(s => s.obj === result.obj);
+            if (entry && entry.obj.isMesh) { e.preventDefault(); openIsolatedView(entry); }
+        }
+    }
+    _lastTap = now;
+}, { passive: false });
+
 // ── Mobile sidebar ────────────────────────────────────────────────────────
 function openSidebar() {
     sidebar.classList.add('open');
@@ -1239,6 +1310,291 @@ window.addEventListener('drop', e => {
     dropOverlay.classList.remove('active');
     loadFile(e.dataTransfer.files[0]);
 });
+
+// ── Isolated Part View ────────────────────────────────────────────────────
+let _isoRenderer = null, _isoScene = null, _isoCamera = null, _isoControls = null;
+let _isoLabelRenderer = null, _isoResizeObs = null, _isoAnimId = null;
+let _isoEdgeLines = null, _isoHoverLine = null, _isoSelectedLine = null;
+let _isoHoveredSeg = -1, _isoSelectedSeg = -1, _isoMaxDim = 1;
+let _isoDimLabel = null, _isoPointerStart = null;
+
+function openIsolatedView(entry) {
+    const overlay   = document.getElementById('iso-overlay');
+    const container = document.getElementById('iso-viewport');
+    document.getElementById('iso-title').textContent = entry.name.trim() || '(unnamed)';
+    _clearIsoEdgeInfo();
+    _cleanupIso();
+
+    // Scene + lights
+    _isoScene = new THREE.Scene();
+    _isoScene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const dl1 = new THREE.DirectionalLight(0xffffff, 1.2); dl1.position.set(5,12,8);  _isoScene.add(dl1);
+    const dl2 = new THREE.DirectionalLight(0xffffff, 0.4); dl2.position.set(-6,-4,-6); _isoScene.add(dl2);
+
+    // Clone geometry, bake world transform, center at origin
+    const geo = entry.obj.geometry.clone();
+    entry.obj.updateWorldMatrix(true, false);
+    geo.applyMatrix4(entry.obj.matrixWorld);
+    geo.computeBoundingBox();
+    const center = new THREE.Vector3();
+    geo.boundingBox.getCenter(center);
+    geo.translate(-center.x, -center.y, -center.z);
+    geo.computeBoundingBox();
+
+    const size = geo.boundingBox.getSize(new THREE.Vector3());
+    _isoMaxDim = Math.max(size.x, size.y, size.z) || 1;
+
+    // Main mesh (orange, slightly transparent so edges show through)
+    const mesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
+        color: 0xff6600, transparent: true, opacity: 0.82,
+        side: THREE.DoubleSide, shininess: 30, depthWrite: false,
+    }));
+    _isoScene.add(mesh);
+
+    // All edges as subtle dim lines
+    const edgesGeo = new THREE.EdgesGeometry(geo, 15);
+    _isoEdgeLines = new THREE.LineSegments(edgesGeo,
+        new THREE.LineBasicMaterial({ color: 0x994400, transparent: true, opacity: 0.55 }));
+    _isoScene.add(_isoEdgeLines);
+
+    // Hover highlight (white) and selected highlight (bright orange)
+    const mkLine = (color) => {
+        const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color }));
+        l.visible = false;
+        _isoScene.add(l);
+        return l;
+    };
+    _isoHoverLine    = mkLine(0xffffff);
+    _isoSelectedLine = mkLine(0xff6600);
+
+    // Floor grid
+    const gridSz   = Math.ceil(_isoMaxDim * 2 / 10) * 10;
+    const gridDivs = Math.min(Math.ceil(gridSz / (_isoMaxDim * 0.05)), 40);
+    const grid = new THREE.GridHelper(gridSz, gridDivs, 0xff6600, 0x553300);
+    grid.position.y = geo.boundingBox.min.y;
+    _isoScene.add(grid);
+
+    // Camera
+    _isoCamera = new THREE.PerspectiveCamera(45, 1, _isoMaxDim * 0.001, _isoMaxDim * 200);
+    _isoCamera.position.set(_isoMaxDim * 1.2, _isoMaxDim * 0.9, _isoMaxDim * 1.8);
+    _isoCamera.lookAt(0, 0, 0);
+
+    // Renderer
+    _isoRenderer = new THREE.WebGLRenderer({ antialias: true });
+    _isoRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    _isoRenderer.setClearColor(0x0e0e0e);
+    container.appendChild(_isoRenderer.domElement);
+
+    // CSS2D label renderer
+    _isoLabelRenderer = new CSS2DRenderer();
+    _isoLabelRenderer.domElement.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none';
+    container.appendChild(_isoLabelRenderer.domElement);
+
+    // Controls
+    _isoControls = new OrbitControls(_isoCamera, _isoRenderer.domElement);
+    _isoControls.enableDamping = true; _isoControls.dampingFactor = 0.07;
+    _isoControls.screenSpacePanning = true;
+
+    // Resize observer
+    const onResize = () => {
+        const w = container.clientWidth, h = container.clientHeight;
+        if (!w || !h) return;
+        _isoRenderer.setSize(w, h);
+        _isoLabelRenderer.setSize(w, h);
+        _isoCamera.aspect = w / h;
+        _isoCamera.updateProjectionMatrix();
+    };
+    _isoResizeObs = new ResizeObserver(onResize);
+    _isoResizeObs.observe(container);
+    onResize();
+
+    // Animate
+    const animate = () => {
+        _isoAnimId = requestAnimationFrame(animate);
+        _isoControls.update();
+        _isoRenderer.render(_isoScene, _isoCamera);
+        _isoLabelRenderer.render(_isoScene, _isoCamera);
+    };
+    animate();
+
+    // Input
+    _isoRenderer.domElement.addEventListener('pointermove', _isoOnMove);
+    _isoRenderer.domElement.addEventListener('pointerdown', _isoOnDown);
+    _isoRenderer.domElement.addEventListener('pointerup',   _isoOnUp);
+
+    overlay.classList.add('open');
+}
+
+function _cleanupIso() {
+    if (_isoAnimId)    { cancelAnimationFrame(_isoAnimId); _isoAnimId = null; }
+    if (_isoResizeObs) { _isoResizeObs.disconnect(); _isoResizeObs = null; }
+    if (_isoRenderer) {
+        _isoRenderer.domElement.removeEventListener('pointermove', _isoOnMove);
+        _isoRenderer.domElement.removeEventListener('pointerdown', _isoOnDown);
+        _isoRenderer.domElement.removeEventListener('pointerup',   _isoOnUp);
+        _isoRenderer.dispose();
+        _isoRenderer = null;
+    }
+    if (_isoControls) { _isoControls.dispose(); _isoControls = null; }
+    if (_isoDimLabel && _isoDimLabel.element.parentNode) {
+        _isoDimLabel.element.parentNode.removeChild(_isoDimLabel.element);
+    }
+    _isoDimLabel = null;
+    _isoEdgeLines = null; _isoHoverLine = null; _isoSelectedLine = null;
+    _isoHoveredSeg = -1; _isoSelectedSeg = -1; _isoPointerStart = null;
+    const container = document.getElementById('iso-viewport');
+    const hint = document.getElementById('iso-dbl-hint');
+    if (container) {
+        // Remove only canvas and label-renderer div, keep hint
+        [...container.children].forEach(c => { if (c !== hint) c.remove(); });
+    }
+    _isoScene = null; _isoCamera = null; _isoLabelRenderer = null;
+}
+
+function closeIsolatedView() {
+    document.getElementById('iso-overlay').classList.remove('open');
+    _cleanupIso();
+    _clearIsoEdgeInfo();
+}
+
+function _clearIsoEdgeInfo() {
+    _isoSelectedSeg = -1;
+    const hint = document.getElementById('iso-edge-hint');
+    const dim  = document.getElementById('iso-edge-dim');
+    if (hint) hint.style.display = '';
+    if (dim)  dim.classList.remove('visible');
+}
+
+function _isoRaycast(clientX, clientY) {
+    if (!_isoRenderer || !_isoEdgeLines) return -1;
+    const rect = _isoRenderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+        ((clientX - rect.left) / rect.width)  *  2 - 1,
+        -((clientY - rect.top) / rect.height) *  2 + 1
+    );
+    const ray = new THREE.Raycaster();
+    ray.params.Line = { threshold: _isoMaxDim * 0.013 };
+    ray.setFromCamera(mouse, _isoCamera);
+    const hits = ray.intersectObject(_isoEdgeLines);
+    return hits.length ? hits[0].faceIndex : -1;
+}
+
+function _isoEdgePts(segIdx) {
+    const pos = _isoEdgeLines.geometry.attributes.position;
+    const i = segIdx * 2;
+    return [
+        new THREE.Vector3().fromBufferAttribute(pos, i),
+        new THREE.Vector3().fromBufferAttribute(pos, i + 1),
+    ];
+}
+
+function _isoHighlight(line, segIdx) {
+    if (segIdx < 0) { line.visible = false; return; }
+    const [v0, v1] = _isoEdgePts(segIdx);
+    line.geometry.setFromPoints([v0, v1]);
+    line.geometry.attributes.position.needsUpdate = true;
+    line.visible = true;
+}
+
+function _isoSelectEdge(segIdx) {
+    _isoSelectedSeg = segIdx;
+    _isoHighlight(_isoSelectedLine, segIdx);
+    _isoHighlight(_isoHoverLine, -1); // clear hover
+
+    const hintEl = document.getElementById('iso-edge-hint');
+    const dimEl  = document.getElementById('iso-edge-dim');
+
+    // Remove old 3D label
+    if (_isoDimLabel) {
+        if (_isoDimLabel.element.parentNode) _isoDimLabel.element.parentNode.removeChild(_isoDimLabel.element);
+        _isoScene.remove(_isoDimLabel);
+        _isoDimLabel = null;
+    }
+
+    if (segIdx < 0) {
+        if (hintEl) hintEl.style.display = '';
+        dimEl.classList.remove('visible');
+        return;
+    }
+
+    const [v0, v1] = _isoEdgePts(segIdx);
+    const len = v0.distanceTo(v1);
+
+    if (hintEl) hintEl.style.display = 'none';
+    document.getElementById('iso-edge-val').textContent  = len.toFixed(3) + '"';
+    document.getElementById('iso-edge-frac').textContent = inToFrac(len);
+    document.getElementById('iso-edge-ft').textContent   = inToFtIn(len);
+    dimEl.classList.add('visible');
+
+    // 3D label at midpoint
+    const mid = v0.clone().lerp(v1, 0.5);
+    const div = document.createElement('div');
+    div.className = 'dim-label-3d';
+    div.textContent = inToFrac(len);
+    _isoDimLabel = new CSS2DObject(div);
+    _isoDimLabel.position.copy(mid);
+    _isoScene.add(_isoDimLabel);
+}
+
+function _isoOnDown(e) {
+    if (e.button !== 0) return;
+    _isoPointerStart = { x: e.clientX, y: e.clientY };
+}
+
+function _isoOnMove(e) {
+    // During drag, skip hover
+    if (e.buttons & 1) {
+        if (_isoPointerStart) {
+            const dx = e.clientX - _isoPointerStart.x, dy = e.clientY - _isoPointerStart.y;
+            if (Math.hypot(dx, dy) > 5) _isoPointerStart = null;
+        }
+        return;
+    }
+    const seg = _isoRaycast(e.clientX, e.clientY);
+    if (seg === _isoHoveredSeg) return;
+    _isoHoveredSeg = seg;
+    if (seg !== _isoSelectedSeg) _isoHighlight(_isoHoverLine, seg);
+    else _isoHighlight(_isoHoverLine, -1);
+    _isoRenderer.domElement.style.cursor = seg >= 0 ? 'crosshair' : '';
+}
+
+function _isoOnUp(e) {
+    if (e.button !== 0) return;
+    const start = _isoPointerStart;
+    _isoPointerStart = null;
+    if (!start) return; // was a drag
+    const dx = e.clientX - start.x, dy = e.clientY - start.y;
+    if (Math.hypot(dx, dy) > 5) return; // was a drag
+    _isoSelectEdge(_isoRaycast(e.clientX, e.clientY));
+}
 </script>
+
+<!-- Isolated Part View overlay -->
+<div id="iso-overlay">
+  <div id="iso-header">
+    <button class="iso-back-btn" onclick="closeIsolatedView()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="15 18 9 12 15 6"/>
+      </svg>
+      Back
+    </button>
+    <div id="iso-title">Part</div>
+  </div>
+  <div id="iso-viewport">
+    <div class="iso-dbl-hint" id="iso-dbl-hint">Click an edge to measure</div>
+  </div>
+  <div id="iso-edge-panel">
+    <div class="iso-edge-hint" id="iso-edge-hint">Click any edge on the part to measure it</div>
+    <div id="iso-edge-dim">
+      <div class="iso-edge-label">Edge Length</div>
+      <div>
+        <span class="iso-edge-value" id="iso-edge-val">—</span>
+        <span class="iso-edge-frac" id="iso-edge-frac"></span>
+        <span class="iso-edge-ft"   id="iso-edge-ft"></span>
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>
