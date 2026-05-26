@@ -339,6 +339,27 @@
       position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
       font-size: 11px; color: #553300; pointer-events: none; white-space: nowrap;
     }
+    #iso-confirm-panel {
+      display: none;
+    }
+    #iso-confirm-panel.visible { display: block; }
+    .iso-confirm-q {
+      font-size: 13px; color: #ff6600; margin-bottom: 10px; font-weight: 500;
+    }
+    .iso-confirm-btns { display: flex; gap: 10px; }
+    .iso-btn-cancel {
+      flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #333;
+      background: #1a1a1a; color: #884400; font-size: 13px; font-weight: 600;
+      cursor: pointer;
+    }
+    .iso-btn-cancel:active { opacity: 0.7; }
+    .iso-btn-measure {
+      flex: 2; padding: 10px; border-radius: 8px; border: none;
+      background: linear-gradient(135deg, #ff6600, #cc3300);
+      color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
+      box-shadow: 0 2px 12px rgba(255,102,0,0.4);
+    }
+    .iso-btn-measure:active { opacity: 0.75; }
   </style>
 </head>
 <body>
@@ -1294,6 +1315,8 @@ fileInput.addEventListener('change', e => {
 });
 
 document.getElementById('iso-back-btn').addEventListener('click', () => closeIsolatedView());
+document.getElementById('iso-btn-yes').addEventListener('click', _isoConfirmYes);
+document.getElementById('iso-btn-no').addEventListener('click',  _isoConfirmNo);
 
 // ── Drag & drop ───────────────────────────────────────────────────────────
 let dragDepth = 0;
@@ -1316,59 +1339,66 @@ window.addEventListener('drop', e => {
 // ── Isolated Part View ────────────────────────────────────────────────────
 let _isoRenderer = null, _isoScene = null, _isoCamera = null, _isoControls = null;
 let _isoLabelRenderer = null, _isoResizeObs = null, _isoAnimId = null;
-let _isoEdgeLines = null, _isoHoverLine = null, _isoSelectedLine = null;
-let _isoHoveredSeg = -1, _isoSelectedSeg = -1, _isoMaxDim = 1;
-let _isoDimLabel = null, _isoPointerStart = null;
+let _isoEdgeLines = null, _isoHoverLine = null, _isoPendingLine = null, _isoMeasuredLine = null;
+let _isoHoveredSeg = -1, _isoPendingSeg = -1, _isoMaxDim = 1;
+let _isoDimLabel = null;
+// Drag detection: track pointer down position per pointerId
+const _isoDragMap = new Map();
 
 function openIsolatedView(entry) {
     const overlay   = document.getElementById('iso-overlay');
     const container = document.getElementById('iso-viewport');
     document.getElementById('iso-title').textContent = entry.name.trim() || '(unnamed)';
-    _clearIsoEdgeInfo();
+    _clearIsoPanel();
     _cleanupIso();
 
     // Scene + lights
     _isoScene = new THREE.Scene();
     _isoScene.add(new THREE.AmbientLight(0xffffff, 0.7));
-    const dl1 = new THREE.DirectionalLight(0xffffff, 1.2); dl1.position.set(5,12,8);  _isoScene.add(dl1);
-    const dl2 = new THREE.DirectionalLight(0xffffff, 0.4); dl2.position.set(-6,-4,-6); _isoScene.add(dl2);
+    const dl1 = new THREE.DirectionalLight(0xffffff, 1.2); dl1.position.set(5, 12, 8);  _isoScene.add(dl1);
+    const dl2 = new THREE.DirectionalLight(0xffffff, 0.4); dl2.position.set(-6, -4, -6); _isoScene.add(dl2);
 
     // Clone geometry, bake world transform, center at origin
     const geo = entry.obj.geometry.clone();
     entry.obj.updateWorldMatrix(true, false);
     geo.applyMatrix4(entry.obj.matrixWorld);
     geo.computeBoundingBox();
-    const center = new THREE.Vector3();
-    geo.boundingBox.getCenter(center);
-    geo.translate(-center.x, -center.y, -center.z);
+    const ctr = new THREE.Vector3();
+    geo.boundingBox.getCenter(ctr);
+    geo.translate(-ctr.x, -ctr.y, -ctr.z);
     geo.computeBoundingBox();
 
     const size = geo.boundingBox.getSize(new THREE.Vector3());
     _isoMaxDim = Math.max(size.x, size.y, size.z) || 1;
 
-    // Main mesh (orange, slightly transparent so edges show through)
+    // Main mesh (semi-transparent so edge lines are visible in front)
     const mesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
-        color: 0xff6600, transparent: true, opacity: 0.82,
+        color: 0xff6600, transparent: true, opacity: 0.78,
         side: THREE.DoubleSide, shininess: 30, depthWrite: false,
     }));
     _isoScene.add(mesh);
 
-    // All edges as subtle dim lines
+    // All edges – rendered on top of the mesh
     const edgesGeo = new THREE.EdgesGeometry(geo, 15);
     _isoEdgeLines = new THREE.LineSegments(edgesGeo,
-        new THREE.LineBasicMaterial({ color: 0x994400, transparent: true, opacity: 0.55 }));
+        new THREE.LineBasicMaterial({ color: 0xaa5500, depthTest: false }));
+    _isoEdgeLines.renderOrder = 1;
     _isoScene.add(_isoEdgeLines);
 
-    // Hover highlight (white) and selected highlight (bright orange)
-    const mkLine = (color) => {
-        const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-        const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color }));
-        l.visible = false;
+    // Three overlay lines: hover (white), pending/confirm (yellow), measured (bright orange)
+    const mkOverlayLine = (color) => {
+        const pts = [new THREE.Vector3(), new THREE.Vector3()];
+        const g   = new THREE.BufferGeometry().setFromPoints(pts);
+        const mat = new THREE.LineBasicMaterial({ color, depthTest: false, linewidth: 1 });
+        const l   = new THREE.Line(g, mat);
+        l.visible      = false;
+        l.renderOrder  = 2;
         _isoScene.add(l);
         return l;
     };
-    _isoHoverLine    = mkLine(0xffffff);
-    _isoSelectedLine = mkLine(0xff6600);
+    _isoHoverLine    = mkOverlayLine(0xffffff);
+    _isoPendingLine  = mkOverlayLine(0xffff00);   // yellow – awaiting confirmation
+    _isoMeasuredLine = mkOverlayLine(0xff6600);   // orange – confirmed measurement
 
     // Floor grid
     const gridSz   = Math.ceil(_isoMaxDim * 2 / 10) * 10;
@@ -1382,7 +1412,7 @@ function openIsolatedView(entry) {
     _isoCamera.position.set(_isoMaxDim * 1.2, _isoMaxDim * 0.9, _isoMaxDim * 1.8);
     _isoCamera.lookAt(0, 0, 0);
 
-    // Renderer
+    // WebGL renderer
     _isoRenderer = new THREE.WebGLRenderer({ antialias: true });
     _isoRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     _isoRenderer.setClearColor(0x0e0e0e);
@@ -1393,12 +1423,12 @@ function openIsolatedView(entry) {
     _isoLabelRenderer.domElement.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none';
     container.appendChild(_isoLabelRenderer.domElement);
 
-    // Controls
+    // Orbit controls
     _isoControls = new OrbitControls(_isoCamera, _isoRenderer.domElement);
     _isoControls.enableDamping = true; _isoControls.dampingFactor = 0.07;
     _isoControls.screenSpacePanning = true;
 
-    // Resize observer
+    // Resize
     const onResize = () => {
         const w = container.clientWidth, h = container.clientHeight;
         if (!w || !h) return;
@@ -1411,7 +1441,7 @@ function openIsolatedView(entry) {
     _isoResizeObs.observe(container);
     onResize();
 
-    // Animate
+    // Render loop
     const animate = () => {
         _isoAnimId = requestAnimationFrame(animate);
         _isoControls.update();
@@ -1420,12 +1450,121 @@ function openIsolatedView(entry) {
     };
     animate();
 
-    // Input
+    // Input handlers
     _isoRenderer.domElement.addEventListener('pointermove', _isoOnMove);
     _isoRenderer.domElement.addEventListener('pointerdown', _isoOnDown);
     _isoRenderer.domElement.addEventListener('pointerup',   _isoOnUp);
 
     overlay.classList.add('open');
+}
+
+// Convert ~10 screen pixels → world-unit threshold (scales correctly with zoom)
+function _isoLineThreshold() {
+    const dist   = _isoCamera.position.length() || 1;
+    const halfH  = Math.tan(THREE.MathUtils.degToRad(_isoCamera.fov * 0.5)) * dist;
+    const screenH = (_isoRenderer.domElement.clientHeight || 1);
+    return (halfH / screenH) * 10;
+}
+
+function _isoRaycast(clientX, clientY) {
+    if (!_isoRenderer || !_isoEdgeLines) return -1;
+    const rect  = _isoRenderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+        ((clientX - rect.left) / rect.width)  * 2 - 1,
+        -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const ray = new THREE.Raycaster();
+    ray.params.Line = { threshold: _isoLineThreshold() };
+    ray.setFromCamera(mouse, _isoCamera);
+    const hits = ray.intersectObject(_isoEdgeLines, false);
+    return hits.length ? hits[0].faceIndex : -1;
+}
+
+function _isoEdgePts(segIdx) {
+    const pos = _isoEdgeLines.geometry.attributes.position;
+    return [
+        new THREE.Vector3().fromBufferAttribute(pos, segIdx * 2),
+        new THREE.Vector3().fromBufferAttribute(pos, segIdx * 2 + 1),
+    ];
+}
+
+function _isoSetLine(line, segIdx) {
+    if (segIdx < 0) { line.visible = false; return; }
+    const [a, b] = _isoEdgePts(segIdx);
+    const posAttr = line.geometry.attributes.position;
+    posAttr.setXYZ(0, a.x, a.y, a.z);
+    posAttr.setXYZ(1, b.x, b.y, b.z);
+    posAttr.needsUpdate = true;
+    line.geometry.computeBoundingSphere();
+    line.visible = true;
+}
+
+// Step 1: user clicked an edge → highlight yellow, show confirm panel
+function _isoAskConfirm(segIdx) {
+    _isoPendingSeg = segIdx;
+    _isoSetLine(_isoHoverLine,    -1);
+    _isoSetLine(_isoPendingLine,  segIdx);
+    _isoSetLine(_isoMeasuredLine, -1);
+
+    document.getElementById('iso-edge-hint').style.display    = 'none';
+    document.getElementById('iso-edge-dim').classList.remove('visible');
+    document.getElementById('iso-confirm-panel').classList.toggle('visible', segIdx >= 0);
+}
+
+// Step 2a: user confirmed → show dimension
+function _isoConfirmYes() {
+    if (_isoPendingSeg < 0) return;
+    const segIdx = _isoPendingSeg;
+    _isoPendingSeg = -1;
+
+    _isoSetLine(_isoPendingLine,  -1);
+    _isoSetLine(_isoMeasuredLine, segIdx);
+    document.getElementById('iso-confirm-panel').classList.remove('visible');
+
+    // Remove old 3D label
+    if (_isoDimLabel) {
+        if (_isoDimLabel.element.parentNode) _isoDimLabel.element.parentNode.removeChild(_isoDimLabel.element);
+        _isoScene.remove(_isoDimLabel);
+        _isoDimLabel = null;
+    }
+
+    const [v0, v1] = _isoEdgePts(segIdx);
+    const len = v0.distanceTo(v1);
+
+    document.getElementById('iso-edge-val').textContent  = len.toFixed(3) + '"';
+    document.getElementById('iso-edge-frac').textContent = inToFrac(len);
+    document.getElementById('iso-edge-ft').textContent   = inToFtIn(len);
+    document.getElementById('iso-edge-dim').classList.add('visible');
+
+    // Floating 3D label at midpoint
+    const mid = v0.clone().lerp(v1, 0.5);
+    const div = document.createElement('div');
+    div.className   = 'dim-label-3d';
+    div.textContent = inToFrac(len);
+    _isoDimLabel = new CSS2DObject(div);
+    _isoDimLabel.position.copy(mid);
+    _isoScene.add(_isoDimLabel);
+}
+
+// Step 2b: user cancelled
+function _isoConfirmNo() {
+    _clearIsoPanel();
+}
+
+function _clearIsoPanel() {
+    _isoPendingSeg = -1;
+    _isoHoveredSeg = -1;
+    if (_isoHoverLine)    _isoSetLine(_isoHoverLine,    -1);
+    if (_isoPendingLine)  _isoSetLine(_isoPendingLine,  -1);
+    if (_isoMeasuredLine) _isoSetLine(_isoMeasuredLine, -1);
+    if (_isoDimLabel) {
+        if (_isoDimLabel.element.parentNode) _isoDimLabel.element.parentNode.removeChild(_isoDimLabel.element);
+        if (_isoScene) _isoScene.remove(_isoDimLabel);
+        _isoDimLabel = null;
+    }
+    document.getElementById('iso-edge-hint').style.display = '';
+    document.getElementById('iso-confirm-panel').classList.remove('visible');
+    document.getElementById('iso-edge-dim').classList.remove('visible');
 }
 
 function _cleanupIso() {
@@ -1439,136 +1578,50 @@ function _cleanupIso() {
         _isoRenderer = null;
     }
     if (_isoControls) { _isoControls.dispose(); _isoControls = null; }
-    if (_isoDimLabel && _isoDimLabel.element.parentNode) {
-        _isoDimLabel.element.parentNode.removeChild(_isoDimLabel.element);
-    }
     _isoDimLabel = null;
-    _isoEdgeLines = null; _isoHoverLine = null; _isoSelectedLine = null;
-    _isoHoveredSeg = -1; _isoSelectedSeg = -1; _isoPointerStart = null;
+    _isoEdgeLines = null; _isoHoverLine = null; _isoPendingLine = null; _isoMeasuredLine = null;
+    _isoPendingSeg = -1; _isoHoveredSeg = -1;
+    _isoDragMap.clear();
     const container = document.getElementById('iso-viewport');
     const hint = document.getElementById('iso-dbl-hint');
-    if (container) {
-        // Remove only canvas and label-renderer div, keep hint
-        [...container.children].forEach(c => { if (c !== hint) c.remove(); });
-    }
+    if (container) [...container.children].forEach(c => { if (c !== hint) c.remove(); });
     _isoScene = null; _isoCamera = null; _isoLabelRenderer = null;
 }
 
 function closeIsolatedView() {
     document.getElementById('iso-overlay').classList.remove('open');
     _cleanupIso();
-    _clearIsoEdgeInfo();
+    _clearIsoPanel();
 }
 
-function _clearIsoEdgeInfo() {
-    _isoSelectedSeg = -1;
-    const hint = document.getElementById('iso-edge-hint');
-    const dim  = document.getElementById('iso-edge-dim');
-    if (hint) hint.style.display = '';
-    if (dim)  dim.classList.remove('visible');
-}
-
-function _isoRaycast(clientX, clientY) {
-    if (!_isoRenderer || !_isoEdgeLines) return -1;
-    const rect = _isoRenderer.domElement.getBoundingClientRect();
-    const mouse = new THREE.Vector2(
-        ((clientX - rect.left) / rect.width)  *  2 - 1,
-        -((clientY - rect.top) / rect.height) *  2 + 1
-    );
-    const ray = new THREE.Raycaster();
-    ray.params.Line = { threshold: _isoMaxDim * 0.013 };
-    ray.setFromCamera(mouse, _isoCamera);
-    const hits = ray.intersectObject(_isoEdgeLines);
-    return hits.length ? hits[0].faceIndex : -1;
-}
-
-function _isoEdgePts(segIdx) {
-    const pos = _isoEdgeLines.geometry.attributes.position;
-    const i = segIdx * 2;
-    return [
-        new THREE.Vector3().fromBufferAttribute(pos, i),
-        new THREE.Vector3().fromBufferAttribute(pos, i + 1),
-    ];
-}
-
-function _isoHighlight(line, segIdx) {
-    if (segIdx < 0) { line.visible = false; return; }
-    const [v0, v1] = _isoEdgePts(segIdx);
-    line.geometry.setFromPoints([v0, v1]);
-    line.geometry.attributes.position.needsUpdate = true;
-    line.visible = true;
-}
-
-function _isoSelectEdge(segIdx) {
-    _isoSelectedSeg = segIdx;
-    _isoHighlight(_isoSelectedLine, segIdx);
-    _isoHighlight(_isoHoverLine, -1); // clear hover
-
-    const hintEl = document.getElementById('iso-edge-hint');
-    const dimEl  = document.getElementById('iso-edge-dim');
-
-    // Remove old 3D label
-    if (_isoDimLabel) {
-        if (_isoDimLabel.element.parentNode) _isoDimLabel.element.parentNode.removeChild(_isoDimLabel.element);
-        _isoScene.remove(_isoDimLabel);
-        _isoDimLabel = null;
-    }
-
-    if (segIdx < 0) {
-        if (hintEl) hintEl.style.display = '';
-        dimEl.classList.remove('visible');
-        return;
-    }
-
-    const [v0, v1] = _isoEdgePts(segIdx);
-    const len = v0.distanceTo(v1);
-
-    if (hintEl) hintEl.style.display = 'none';
-    document.getElementById('iso-edge-val').textContent  = len.toFixed(3) + '"';
-    document.getElementById('iso-edge-frac').textContent = inToFrac(len);
-    document.getElementById('iso-edge-ft').textContent   = inToFtIn(len);
-    dimEl.classList.add('visible');
-
-    // 3D label at midpoint
-    const mid = v0.clone().lerp(v1, 0.5);
-    const div = document.createElement('div');
-    div.className = 'dim-label-3d';
-    div.textContent = inToFrac(len);
-    _isoDimLabel = new CSS2DObject(div);
-    _isoDimLabel.position.copy(mid);
-    _isoScene.add(_isoDimLabel);
-}
-
+// Pointer handling – track each pointer separately to detect drag vs click
 function _isoOnDown(e) {
-    if (e.button !== 0) return;
-    _isoPointerStart = { x: e.clientX, y: e.clientY };
+    _isoDragMap.set(e.pointerId, { x: e.clientX, y: e.clientY, dragged: false });
 }
 
 function _isoOnMove(e) {
-    // During drag, skip hover
-    if (e.buttons & 1) {
-        if (_isoPointerStart) {
-            const dx = e.clientX - _isoPointerStart.x, dy = e.clientY - _isoPointerStart.y;
-            if (Math.hypot(dx, dy) > 5) _isoPointerStart = null;
-        }
-        return;
+    const rec = _isoDragMap.get(e.pointerId);
+    if (rec) {
+        const dx = e.clientX - rec.x, dy = e.clientY - rec.y;
+        if (Math.hypot(dx, dy) > 6) rec.dragged = true;
+        return; // button held – skip hover
     }
+    // No button – hover highlight (skip when confirm panel is open)
+    if (_isoPendingSeg >= 0) return;
     const seg = _isoRaycast(e.clientX, e.clientY);
     if (seg === _isoHoveredSeg) return;
     _isoHoveredSeg = seg;
-    if (seg !== _isoSelectedSeg) _isoHighlight(_isoHoverLine, seg);
-    else _isoHighlight(_isoHoverLine, -1);
+    _isoSetLine(_isoHoverLine, seg);
     _isoRenderer.domElement.style.cursor = seg >= 0 ? 'crosshair' : '';
 }
 
 function _isoOnUp(e) {
-    if (e.button !== 0) return;
-    const start = _isoPointerStart;
-    _isoPointerStart = null;
-    if (!start) return; // was a drag
-    const dx = e.clientX - start.x, dy = e.clientY - start.y;
-    if (Math.hypot(dx, dy) > 5) return; // was a drag
-    _isoSelectEdge(_isoRaycast(e.clientX, e.clientY));
+    const rec = _isoDragMap.get(e.pointerId);
+    _isoDragMap.delete(e.pointerId);
+    if (!rec || rec.dragged) return; // was a drag (orbit)
+    // It was a genuine click – raycast for edge
+    const seg = _isoRaycast(e.clientX, e.clientY);
+    if (seg >= 0) _isoAskConfirm(seg);
 }
 </script>
 
@@ -1588,6 +1641,13 @@ function _isoOnUp(e) {
   </div>
   <div id="iso-edge-panel">
     <div class="iso-edge-hint" id="iso-edge-hint">Click any edge on the part to measure it</div>
+    <div id="iso-confirm-panel">
+      <div class="iso-confirm-q">Is this the edge you want to measure?</div>
+      <div class="iso-confirm-btns">
+        <button class="iso-btn-cancel" id="iso-btn-no">No, cancel</button>
+        <button class="iso-btn-measure" id="iso-btn-yes">Yes, measure it</button>
+      </div>
+    </div>
     <div id="iso-edge-dim">
       <div class="iso-edge-label">Edge Length</div>
       <div>
