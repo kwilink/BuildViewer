@@ -310,6 +310,12 @@
       padding: 8px 0; flex-shrink: 0;
     }
     .iso-back-btn svg { width: 20px; height: 20px; }
+    .iso-reset-btn {
+      background: none; border: 1px solid #553300; border-radius: 6px;
+      color: #884400; font-size: 12px; font-weight: 500; cursor: pointer;
+      padding: 6px 12px; flex-shrink: 0; transition: background 0.15s, color 0.15s;
+    }
+    .iso-reset-btn:hover { background: rgba(255,102,0,0.12); color: #ff6600; border-color: #ff6600; }
     #iso-title {
       flex: 1; text-align: center;
       font-size: 14px; font-weight: 600; color: #ff6600;
@@ -1429,6 +1435,7 @@ fileInput.addEventListener('change', e => {
 document.getElementById('iso-back-btn').addEventListener('click', () => closeIsolatedView());
 document.getElementById('iso-btn-yes').addEventListener('click', _isoConfirmYes);
 document.getElementById('iso-btn-no').addEventListener('click',  _isoConfirmNo);
+document.getElementById('iso-reset-dims').addEventListener('click', _isoResetDimensions);
 
 // ── Drag & drop ───────────────────────────────────────────────────────────
 let dragDepth = 0;
@@ -1451,9 +1458,9 @@ window.addEventListener('drop', e => {
 // ── Isolated Part View ────────────────────────────────────────────────────
 let _isoRenderer = null, _isoScene = null, _isoCamera = null, _isoControls = null;
 let _isoLabelRenderer = null, _isoResizeObs = null, _isoAnimId = null;
-let _isoEdgeLines = null, _isoHoverLine = null, _isoPendingLine = null, _isoMeasuredLine = null;
+let _isoEdgeLines = null, _isoHoverLine = null, _isoPendingLine = null;
 let _isoHoveredSeg = -1, _isoPendingSeg = -1, _isoMaxDim = 1;
-let _isoDimLabel = null;
+let _isoMeasurements = []; // [{line: THREE.Line, label: CSS2DObject}] — accumulates across confirmations
 let _isoVtxMap = null;      // vertex-key → [segIdx, …] adjacency built per isolated view
 let _isoExactEdges = null; // exact BREP edges transformed to isolated-view space
 // Drag detection: track pointer down position per pointerId
@@ -1518,9 +1525,8 @@ function openIsolatedView(entry) {
         _isoScene.add(l);
         return l;
     };
-    _isoHoverLine    = mkOverlayLine(0xffffff);
-    _isoPendingLine  = mkOverlayLine(0xffff00);   // yellow – awaiting confirmation
-    _isoMeasuredLine = mkOverlayLine(0xff6600);   // orange – confirmed measurement
+    _isoHoverLine   = mkOverlayLine(0xffffff);
+    _isoPendingLine = mkOverlayLine(0xffff00);   // yellow – awaiting confirmation
 
     // Floor grid
     const gridSz   = Math.ceil(_isoMaxDim * 2 / 10) * 10;
@@ -1836,9 +1842,8 @@ function _isoSetLine(line, segIdx) {
 // Step 1: user clicked an edge → highlight yellow, show confirm panel
 function _isoAskConfirm(segIdx) {
     _isoPendingSeg = segIdx;
-    _isoSetLine(_isoHoverLine,    -1);
-    _isoSetLine(_isoPendingLine,  segIdx);
-    _isoSetLine(_isoMeasuredLine, -1);
+    _isoSetLine(_isoHoverLine,   -1);
+    _isoSetLine(_isoPendingLine, segIdx);
 
     document.getElementById('iso-edge-hint').style.display    = 'none';
     document.getElementById('iso-edge-dim').classList.remove('visible');
@@ -1853,27 +1858,22 @@ function _isoConfirmYes() {
     _isoSetLine(_isoPendingLine, -1);
     document.getElementById('iso-confirm-panel').classList.remove('visible');
 
-    if (_isoDimLabel) {
-        if (_isoDimLabel.element.parentNode) _isoDimLabel.element.parentNode.removeChild(_isoDimLabel.element);
-        _isoScene.remove(_isoDimLabel);
-        _isoDimLabel = null;
-    }
-
-    let labelVal, midPt;
+    let labelVal, midPt, lineA, lineB;
 
     // ── Exact BREP measurement (preferred) ──
     const exactEdge = _isoNearestExactEdge(segIdx);
     if (exactEdge) {
         if (exactEdge.type === 'line') {
             const len = exactEdge.start.distanceTo(exactEdge.end);
-            _isoSetLinePts(_isoMeasuredLine, exactEdge.start, exactEdge.end);
+            lineA = exactEdge.start; lineB = exactEdge.end;
             document.getElementById('iso-edge-val').textContent  = len.toFixed(3) + '"';
             document.getElementById('iso-edge-frac').textContent = inToFrac(len);
             document.getElementById('iso-edge-ft').textContent   = inToFtIn(len);
             midPt    = exactEdge.start.clone().lerp(exactEdge.end, 0.5);
             labelVal = inToFrac(len);
         } else if (exactEdge.type === 'arc') {
-            _isoSetLine(_isoMeasuredLine, segIdx);
+            const [va, vb] = _isoEdgePts(segIdx);
+            lineA = va; lineB = vb;
             const r = exactEdge.radius;
             document.getElementById('iso-edge-val').textContent  = 'R ' + r.toFixed(3) + '"';
             document.getElementById('iso-edge-frac').textContent = 'R ' + inToFrac(r);
@@ -1882,8 +1882,8 @@ function _isoConfirmYes() {
             midPt    = pts[Math.floor(pts.length / 2)].clone();
             labelVal = 'R ' + inToFrac(r);
         } else {
-            // NurbsCurve: show arc length
-            _isoSetLine(_isoMeasuredLine, segIdx);
+            const [va, vb] = _isoEdgePts(segIdx);
+            lineA = va; lineB = vb;
             const len = _arcLength(exactEdge.pts);
             document.getElementById('iso-edge-val').textContent  = '~ ' + len.toFixed(3) + '"';
             document.getElementById('iso-edge-frac').textContent = '~ ' + inToFrac(len);
@@ -1897,7 +1897,7 @@ function _isoConfirmYes() {
         const result = _isoAnalyzeEdge(segIdx);
         if (!result) return;
         if (result.type === 'straight') {
-            _isoSetLinePts(_isoMeasuredLine, result.start, result.end);
+            lineA = result.start; lineB = result.end;
             const len = result.length;
             document.getElementById('iso-edge-val').textContent  = len.toFixed(3) + '"';
             document.getElementById('iso-edge-frac').textContent = inToFrac(len);
@@ -1905,24 +1905,36 @@ function _isoConfirmYes() {
             midPt    = result.start.clone().lerp(result.end, 0.5);
             labelVal = inToFrac(len);
         } else {
-            _isoSetLine(_isoMeasuredLine, segIdx);
+            const [va, vb] = _isoEdgePts(segIdx);
+            lineA = va; lineB = vb;
             const r = result.radius;
             document.getElementById('iso-edge-val').textContent  = 'R ' + r.toFixed(3) + '"';
             document.getElementById('iso-edge-frac').textContent = 'R ' + inToFrac(r);
             document.getElementById('iso-edge-ft').textContent   = 'R ' + inToFtIn(r);
-            const [v0, v1] = _isoEdgePts(segIdx);
-            midPt    = v0.clone().lerp(v1, 0.5);
+            midPt    = va.clone().lerp(vb, 0.5);
             labelVal = 'R ' + inToFrac(r);
         }
     }
 
     document.getElementById('iso-edge-dim').classList.add('visible');
+
+    // Create a new permanent orange line for this measurement
+    const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+    const mat = new THREE.LineBasicMaterial({ color: 0xff6600, depthTest: false });
+    const line = new THREE.Line(geo, mat);
+    line.renderOrder = 2;
+    _isoSetLinePts(line, lineA, lineB);
+    _isoScene.add(line);
+
+    // Create a permanent 3D label
     const div = document.createElement('div');
     div.className   = 'dim-label-3d';
     div.textContent = labelVal;
-    _isoDimLabel = new CSS2DObject(div);
-    _isoDimLabel.position.copy(midPt);
-    _isoScene.add(_isoDimLabel);
+    const label = new CSS2DObject(div);
+    label.position.copy(midPt);
+    _isoScene.add(label);
+
+    _isoMeasurements.push({ line, label });
 }
 
 // Step 2b: user cancelled
@@ -1933,16 +1945,25 @@ function _isoConfirmNo() {
 function _clearIsoPanel() {
     _isoPendingSeg = -1;
     _isoHoveredSeg = -1;
-    if (_isoHoverLine)    _isoSetLine(_isoHoverLine,    -1);
-    if (_isoPendingLine)  _isoSetLine(_isoPendingLine,  -1);
-    if (_isoMeasuredLine) _isoSetLine(_isoMeasuredLine, -1);
-    if (_isoDimLabel) {
-        if (_isoDimLabel.element.parentNode) _isoDimLabel.element.parentNode.removeChild(_isoDimLabel.element);
-        if (_isoScene) _isoScene.remove(_isoDimLabel);
-        _isoDimLabel = null;
-    }
+    if (_isoHoverLine)   _isoSetLine(_isoHoverLine,   -1);
+    if (_isoPendingLine) _isoSetLine(_isoPendingLine, -1);
     document.getElementById('iso-edge-hint').style.display = '';
     document.getElementById('iso-confirm-panel').classList.remove('visible');
+    document.getElementById('iso-edge-dim').classList.remove('visible');
+}
+
+function _isoResetDimensions() {
+    for (const m of _isoMeasurements) {
+        if (_isoScene) _isoScene.remove(m.line);
+        m.line.geometry.dispose();
+        m.line.material.dispose();
+        if (m.label) {
+            if (m.label.element?.parentNode) m.label.element.parentNode.removeChild(m.label.element);
+            if (_isoScene) _isoScene.remove(m.label);
+        }
+    }
+    _isoMeasurements = [];
+    document.getElementById('iso-edge-hint').style.display = '';
     document.getElementById('iso-edge-dim').classList.remove('visible');
 }
 
@@ -1957,8 +1978,8 @@ function _cleanupIso() {
         _isoRenderer = null;
     }
     if (_isoControls) { _isoControls.dispose(); _isoControls = null; }
-    _isoDimLabel = null;
-    _isoEdgeLines = null; _isoHoverLine = null; _isoPendingLine = null; _isoMeasuredLine = null;
+    _isoResetDimensions();
+    _isoEdgeLines = null; _isoHoverLine = null; _isoPendingLine = null;
     _isoPendingSeg = -1; _isoHoveredSeg = -1; _isoVtxMap = null; _isoExactEdges = null;
     _isoDragMap.clear();
     const container = document.getElementById('iso-viewport');
@@ -2014,6 +2035,7 @@ function _isoOnUp(e) {
       Back
     </button>
     <div id="iso-title">Part</div>
+    <button class="iso-reset-btn" id="iso-reset-dims">Reset Dimensions</button>
   </div>
   <div id="iso-viewport">
     <div class="iso-dbl-hint" id="iso-dbl-hint">Click an edge to measure</div>
