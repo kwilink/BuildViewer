@@ -1293,6 +1293,8 @@ fileInput.addEventListener('change', e => {
     fileInput.value = '';
 });
 
+document.getElementById('iso-back-btn').addEventListener('click', () => closeIsolatedView());
+
 // ── Drag & drop ───────────────────────────────────────────────────────────
 let dragDepth = 0;
 
@@ -1573,7 +1575,7 @@ function _isoOnUp(e) {
 <!-- Isolated Part View overlay -->
 <div id="iso-overlay">
   <div id="iso-header">
-    <button class="iso-back-btn" onclick="closeIsolatedView()">
+    <button class="iso-back-btn" id="iso-back-btn">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="15 18 9 12 15 6"/>
       </svg>
