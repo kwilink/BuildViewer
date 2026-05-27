@@ -1318,6 +1318,16 @@ renderer.domElement.addEventListener('pointerdown', e => {
     dragState     = null;
     isDragging    = false;
 
+    // Long-press fires for the currently selected part regardless of where the
+    // hold lands — the user clicks once to select, then holds anywhere to isolate.
+    _cancelLongPress();
+    _longPressOrigin = { x: e.clientX, y: e.clientY };
+    _longPressTimer  = setTimeout(() => {
+        const sel = selectedObj && selectables.find(s => s.obj === selectedObj);
+        if (sel && sel.obj.isMesh && !isDragging) openIsolatedView(sel);
+        _cancelLongPress();
+    }, LONG_PRESS_MS);
+
     const result = hitTest(e.clientX, e.clientY);
     if (!result) return;
 
@@ -1326,16 +1336,6 @@ renderer.domElement.addEventListener('pointerdown', e => {
     const wasSelected = hit === selectedObj;
 
     if (!wasSelected && entry) selectEntry(entry);
-
-    // Start long-press timer using the entry already found — no second hitTest needed
-    if (entry && entry.obj.isMesh) {
-        _longPressEntry  = entry;
-        _longPressOrigin = { x: e.clientX, y: e.clientY };
-        _longPressTimer  = setTimeout(() => {
-            if (_longPressEntry && !isDragging) openIsolatedView(_longPressEntry);
-            _cancelLongPress();
-        }, LONG_PRESS_MS);
-    }
 
     // Drag plane through the exact surface click point, perpendicular to camera.
     // Using the surface point (not the object pivot) means the grabbed spot stays
