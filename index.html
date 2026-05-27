@@ -1733,11 +1733,10 @@ function _isoWalk(startVtxKey, prevSeg, outDir, continueFn) {
     return farPts;
 }
 
-// Classify the clicked segment and return measurement:
-//   { type:'straight', start, end, length }  — merged collinear segments or isolated chord
-// Classify the clicked segment:
-//   { type:'straight', start, end, length }  — merged collinear run
-//   { type:'arc',  radius }                  — curved segment (local 3-point fit)
+// Classify the clicked segment and return measurement.
+// Arc radius is only reliable from exact BREP data — tessellation geometry
+// noise is indistinguishable from a large-radius arc, so this path always
+// returns a straight-line measurement (merged collinear run or single chord).
 function _isoAnalyzeEdge(startSeg) {
     if (!_isoVtxMap || !_isoEdgeLines) return null;
     const STRAIGHT_COS = 0.9998; // ≈ cos(1°)
@@ -1748,59 +1747,12 @@ function _isoAnalyzeEdge(startSeg) {
 
     const isStraight = (d, n) => Math.abs(d.dot(n)) >= STRAIGHT_COS;
 
-    // Walk collinear neighbors in both directions
     const bwdPts = _isoWalk(kaKey, startSeg, dir.clone().negate(), isStraight);
     const fwdPts = _isoWalk(kbKey, startSeg, dir.clone(),          isStraight);
 
-    if (bwdPts.length || fwdPts.length) {
-        // At least one collinear neighbor → merge into straight line
-        const startPt = bwdPts.length ? bwdPts[bwdPts.length - 1] : pa.clone();
-        const endPt   = fwdPts.length ? fwdPts[fwdPts.length - 1] : pb.clone();
-        return { type: 'straight', start: startPt, end: endPt, length: startPt.distanceTo(endPt) };
-    }
-
-    // No collinear neighbors — segment is at a direction change (likely on a curve).
-    // Use only the immediate single neighbor at each end for a local 3-point arc fit;
-    // this never walks across the straight/arc boundary.
-    const bwdNbrs = (_isoVtxMap.get(kaKey) || []).filter(s => s !== startSeg);
-    const fwdNbrs = (_isoVtxMap.get(kbKey) || []).filter(s => s !== startSeg);
-
-    if (bwdNbrs.length === 1 && fwdNbrs.length === 1) {
-        const bwdSeg = bwdNbrs[0];
-        const bwdA = _isoSegPt(bwdSeg, 0), bwdB = _isoSegPt(bwdSeg, 1);
-        const bwdFar = _isoVtxKey(bwdA) === kaKey ? bwdB.clone() : bwdA.clone();
-
-        const fwdSeg = fwdNbrs[0];
-        const fwdA = _isoSegPt(fwdSeg, 0), fwdB = _isoSegPt(fwdSeg, 1);
-        const fwdFar = _isoVtxKey(fwdA) === kbKey ? fwdB.clone() : fwdA.clone();
-
-        // Two-part arc test:
-        // 1) Three independent circumradii must agree within 10% — ensures the
-        //    4 points lie on a consistent circle (rules out cross-junction noise).
-        // 2) pa/pb must deviate from the bwdFar→fwdFar chord by > 1% of that
-        //    chord — rules out nearly-collinear points whose large spurious radius
-        //    still passes the agreement test.
-        const chord  = fwdFar.clone().sub(bwdFar);
-        const chordLen = chord.length();
-        if (chordLen > 1e-8) {
-            const u = chord.clone().divideScalar(chordLen);
-            const sagA = pa.clone().sub(bwdFar); sagA.sub(u.clone().multiplyScalar(sagA.dot(u)));
-            const sagB = pb.clone().sub(bwdFar); sagB.sub(u.clone().multiplyScalar(sagB.dot(u)));
-            const sagitta = Math.max(sagA.length(), sagB.length());
-            if (sagitta > chordLen * 0.01) {
-                const r1 = _fitCircle3D([bwdFar, pa.clone(), pb.clone()]);
-                const r2 = _fitCircle3D([pa.clone(), pb.clone(), fwdFar]);
-                const r3 = _fitCircle3D([bwdFar, pa.clone(), fwdFar]);
-                if (r1 > 0 && r2 > 0 && r3 > 0) {
-                    const rMin = Math.min(r1, r2, r3), rMax = Math.max(r1, r2, r3);
-                    const rAvg = (r1 + r2 + r3) / 3;
-                    if ((rMax - rMin) / rAvg < 0.1) return { type: 'arc', radius: rAvg };
-                }
-            }
-        }
-    }
-
-    return { type: 'straight', start: pa.clone(), end: pb.clone(), length: pa.distanceTo(pb) };
+    const startPt = bwdPts.length ? bwdPts[bwdPts.length - 1] : pa.clone();
+    const endPt   = fwdPts.length ? fwdPts[fwdPts.length - 1] : pb.clone();
+    return { type: 'straight', start: startPt, end: endPt, length: startPt.distanceTo(endPt) };
 }
 
 // 2D screen-space distance from point (px,py) to segment (ax,ay)-(bx,by)
