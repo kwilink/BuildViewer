@@ -1685,6 +1685,23 @@ function _isoBuildVtxMap() {
     }
 }
 
+// True if any point in pts deviates from the line (anchorPt → pts[last]) by > 0.5% of span.
+// Distinguishes arc walks (sagitta > 0) from straight-edge walks (deviation ≈ 0).
+function _walkDeviates(pts, anchorPt) {
+    if (!pts.length) return false;
+    const far = pts[pts.length - 1];
+    const chord = far.clone().sub(anchorPt);
+    const chordLen = chord.length();
+    if (chordLen < 1e-8) return false;
+    const u = chord.clone().divideScalar(chordLen);
+    for (const p of pts) {
+        const v = p.clone().sub(anchorPt);
+        const perp = v.clone().sub(u.clone().multiplyScalar(v.dot(u))).length();
+        if (perp > chordLen * 0.005) return true;
+    }
+    return false;
+}
+
 // Circumradius of 3 well-separated points = radius of circle through them (Heron's formula)
 function _fitCircle3D(pts) {
     if (pts.length < 3) return 0;
@@ -1761,9 +1778,21 @@ function _isoAnalyzeEdge(startSeg) {
         const bwdArc  = _isoWalk(kaKey, startSeg, dir.clone().negate(), isCurve);
         const fwdArc  = _isoWalk(kbKey, startSeg, dir.clone(),          isCurve);
         if (bwdArc.length > 0 && fwdArc.length > 0) {
-            const allPts = [...bwdArc.reverse(), pa.clone(), pb.clone(), ...fwdArc];
-            const radius = _fitCircle3D(allPts);
-            if (radius > 0) return { type: 'arc', radius };
+            // Only include walk directions that actually curve; straight-section
+            // neighbors pass isCurve (tangent continuity) but must be excluded.
+            const bwdCurves = _walkDeviates(bwdArc, pa);
+            const fwdCurves = _walkDeviates(fwdArc, pb);
+            if (bwdCurves || fwdCurves) {
+                const arcPts = [
+                    ...(bwdCurves ? [...bwdArc].reverse() : []),
+                    pa.clone(), pb.clone(),
+                    ...(fwdCurves ? fwdArc : [])
+                ];
+                if (arcPts.length >= 3) {
+                    const radius = _fitCircle3D(arcPts);
+                    if (radius > 0) return { type: 'arc', radius };
+                }
+            }
         }
     }
 
