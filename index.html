@@ -320,6 +320,11 @@
     }
     #iso-viewport { flex: 1; position: relative; overflow: hidden; min-height: 0; }
     #iso-viewport canvas { display: block; }
+    #iso-part-name {
+      position: absolute; bottom: 12px; left: 14px; pointer-events: none;
+      font-size: 12px; font-weight: 600; color: #ff6600;
+      opacity: 0.55; letter-spacing: 0.03em;
+    }
     #iso-edge-panel {
       flex-shrink: 0;
       background: #141414; border-top: 1px solid #2a2a2a;
@@ -1460,7 +1465,9 @@ const _isoDragMap = new Map();
 function openIsolatedView(entry) {
     const overlay   = document.getElementById('iso-overlay');
     const container = document.getElementById('iso-viewport');
-    document.getElementById('iso-title').textContent = entry.name.trim() || '(unnamed)';
+    const _entryName = entry.name.trim() || '(unnamed)';
+    document.getElementById('iso-title').textContent = _entryName;
+    document.getElementById('iso-part-name').textContent = _entryName;
     _clearIsoPanel();
     _cleanupIso();
 
@@ -2030,6 +2037,7 @@ function _isoOnUp(e) {
   </div>
   <div id="iso-viewport">
     <div class="iso-dbl-hint" id="iso-dbl-hint">Click an edge to measure</div>
+    <div id="iso-part-name"></div>
   </div>
   <div id="iso-edge-panel">
     <div class="iso-edge-hint" id="iso-edge-hint">Click any edge on the part to measure it</div>
