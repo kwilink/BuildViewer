@@ -1308,8 +1308,11 @@ function hitTest(clientX, clientY) {
     mouse.y = -((clientY - rect.top)  / rect.height) * 2 + 1;
     raycaster.setFromCamera(mouse, camera);
     const hits = raycaster.intersectObjects(visible.map(s => s.obj), false);
-    // Return both the object and the world-space surface point
-    return hits.length ? { obj: hits[0].object, point: hits[0].point } : null;
+    if (!hits.length) return null;
+    // Prefer mesh hits — line/curve objects can intercept the ray before the solid
+    // part behind them, causing the user to accidentally select an un-isolatable edge.
+    const best = hits.find(h => h.object.isMesh) ?? hits[0];
+    return { obj: best.object, point: best.point };
 }
 
 renderer.domElement.addEventListener('pointerdown', e => {
@@ -1323,12 +1326,10 @@ renderer.domElement.addEventListener('pointerdown', e => {
     _cancelLongPress();
     _longPressOrigin = { x: e.clientX, y: e.clientY };
     _longPressTimer  = setTimeout(() => {
-        const sel = (selectedObj && selectables.find(s => s.obj === selectedObj))
-                 || _longPressEntry;
-        if (sel && sel.obj.isMesh && !isDragging) {
-            _longPressFired = true; // suppress pointerup deselect for this gesture
-            openIsolatedView(sel);
-        }
+        // Prefer the entry captured at press time; fall back to whatever is selected.
+        const sel = _longPressEntry
+                 || (selectedObj && selectables.find(s => s.obj === selectedObj));
+        if (sel && sel.obj.isMesh && !isDragging) openIsolatedView(sel);
         _cancelLongPress();
     }, LONG_PRESS_MS);
 
@@ -1396,11 +1397,10 @@ renderer.domElement.addEventListener('pointerup', e => {
     controls.enabled = true;
     renderer.domElement.style.cursor = '';
 
-    // Long-press just opened isolated view — skip deselect so selectedObj stays
-    // intact for subsequent holds on background.
-    if (_longPressFired) {
-        _longPressFired = false;
-        dragState = null;
+    // If isolated view just opened from this hold gesture, skip deselect so
+    // selectedObj stays intact for subsequent presses.
+    if (document.getElementById('iso-overlay').classList.contains('open')) {
+        dragState  = null;
         isDragging = false;
         return;
     }
@@ -1424,7 +1424,6 @@ renderer.domElement.addEventListener('pointerup', e => {
 let _longPressTimer  = null;
 let _longPressEntry  = null;
 let _longPressOrigin = null;
-let _longPressFired  = false; // true while pointerup from a successful hold is pending
 const LONG_PRESS_MS  = 500;
 
 function _cancelLongPress() {
