@@ -15,7 +15,7 @@ A browser-based 3D viewer for Rhino `.3dm` files. Open a model, inspect individu
 
 ## Isolated view
 
-Hold a click on any selected part for 500 ms to open it in a full-screen isolated view. You can also double-click a part in the sidebar list to open it directly.
+Double-click (or double-tap on mobile) any part in the viewport to open it in a full-screen isolated view. You can also double-click a part in the sidebar list to open it directly.
 
 Inside the isolated view:
 - **Click any edge** to measure it — a confirmation prompt appears before committing the measurement
@@ -56,7 +56,8 @@ npx serve .
 | Pan | Right drag |
 | Zoom | Scroll wheel |
 | Select part | Click |
-| Open isolated view | Click to select, then hold 500 ms anywhere |
+| Open isolated view | Double-click part |
+| Open isolated view (sidebar) | Double-click sidebar row |
 | Deselect | Click selected part again, or click background |
 
 ### Mobile / iPhone
@@ -67,7 +68,7 @@ npx serve .
 | Pan | Two-finger drag |
 | Zoom | Pinch |
 | Select part | Tap |
-| Open isolated view | Tap to select, then hold 500 ms anywhere |
+| Open isolated view | Double-tap part |
 | Open isolated view (sidebar) | Double-tap sidebar row |
 
 ## Project structure

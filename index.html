@@ -1318,17 +1318,6 @@ renderer.domElement.addEventListener('pointerdown', e => {
     dragState     = null;
     isDragging    = false;
 
-    // Long-press fires for the currently selected part regardless of where the
-    // hold lands — the user clicks once to select, then holds anywhere to isolate.
-    _cancelLongPress();
-    _longPressOrigin = { x: e.clientX, y: e.clientY };
-    _longPressTimer  = setTimeout(() => {
-        const sel = (selectedObj && selectables.find(s => s.obj === selectedObj))
-                 || _longPressEntry;
-        if (sel && sel.obj.isMesh && !isDragging) openIsolatedView(sel);
-        _cancelLongPress();
-    }, LONG_PRESS_MS);
-
     const result = hitTest(e.clientX, e.clientY);
     if (!result) return;
 
@@ -1337,7 +1326,6 @@ renderer.domElement.addEventListener('pointerdown', e => {
     const wasSelected = hit === selectedObj;
 
     if (!wasSelected && entry) selectEntry(entry);
-    if (entry && entry.obj.isMesh) _longPressEntry = entry;
 
     // Drag plane through the exact surface click point, perpendicular to camera.
     // Using the surface point (not the object pivot) means the grabbed spot stays
@@ -1366,7 +1354,7 @@ renderer.domElement.addEventListener('pointermove', e => {
 
     const dx = e.clientX - pointerDownAt.x;
     const dy = e.clientY - pointerDownAt.y;
-    if (!isDragging && Math.hypot(dx, dy) > 5) { isDragging = true; _cancelLongPress(); }
+    if (!isDragging && Math.hypot(dx, dy) > 5) isDragging = true;
     if (!isDragging) return;
 
     const rect = renderer.domElement.getBoundingClientRect();
@@ -1408,28 +1396,13 @@ renderer.domElement.addEventListener('pointerup', e => {
     }
 });
 
-// ── Long-press → isolated view ────────────────────────────────────────────
-let _longPressTimer  = null;
-let _longPressEntry  = null;
-let _longPressOrigin = null;
-const LONG_PRESS_MS  = 500;
-
-function _cancelLongPress() {
-    if (_longPressTimer) { clearTimeout(_longPressTimer); _longPressTimer = null; }
-    _longPressEntry = null;
-    _longPressOrigin = null;
-}
-
-renderer.domElement.addEventListener('pointermove', e => {
-    if (!_longPressTimer || !_longPressOrigin) return;
-    if (Math.hypot(e.clientX - _longPressOrigin.x, e.clientY - _longPressOrigin.y) > 15)
-        _cancelLongPress();
+// ── Double-click / double-tap → isolated view ─────────────────────────────
+renderer.domElement.addEventListener('dblclick', e => {
+    const result = hitTest(e.clientX, e.clientY);
+    if (!result) return;
+    const entry = selectables.find(s => s.obj === result.obj);
+    if (entry && entry.obj.isMesh) { selectEntry(entry); openIsolatedView(entry); }
 });
-
-renderer.domElement.addEventListener('pointerup',   _cancelLongPress);
-renderer.domElement.addEventListener('touchcancel', _cancelLongPress);
-// Prevent iOS long-press context menu from interrupting the hold gesture
-renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
 
 // ── Mobile sidebar ────────────────────────────────────────────────────────
 function openSidebar() {
