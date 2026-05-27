@@ -1774,9 +1774,17 @@ function _isoAnalyzeEdge(startSeg) {
         const fwdA = _isoSegPt(fwdSeg, 0), fwdB = _isoSegPt(fwdSeg, 1);
         const fwdFar = _isoVtxKey(fwdA) === kbKey ? fwdB.clone() : fwdA.clone();
 
-        // Circumradius of bwdFar → pa → pb → fwdFar (uses first/mid/last)
-        const radius = _fitCircle3D([bwdFar, pa.clone(), pb.clone(), fwdFar]);
-        if (radius > 0) return { type: 'arc', radius };
+        // Require three independent circumradius samples to agree within 10%.
+        // On a true arc all triplets lie on the same circle; nearly-collinear
+        // points or cross-junction geometry give wildly different values.
+        const r1 = _fitCircle3D([bwdFar, pa.clone(), pb.clone()]);
+        const r2 = _fitCircle3D([pa.clone(), pb.clone(), fwdFar]);
+        const r3 = _fitCircle3D([bwdFar, pa.clone(), fwdFar]);
+        if (r1 > 0 && r2 > 0 && r3 > 0) {
+            const rMin = Math.min(r1, r2, r3), rMax = Math.max(r1, r2, r3);
+            const rAvg = (r1 + r2 + r3) / 3;
+            if ((rMax - rMin) / rAvg < 0.1) return { type: 'arc', radius: rAvg };
+        }
     }
 
     return { type: 'straight', start: pa.clone(), end: pb.clone(), length: pa.distanceTo(pb) };
