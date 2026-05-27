@@ -1774,16 +1774,29 @@ function _isoAnalyzeEdge(startSeg) {
         const fwdA = _isoSegPt(fwdSeg, 0), fwdB = _isoSegPt(fwdSeg, 1);
         const fwdFar = _isoVtxKey(fwdA) === kbKey ? fwdB.clone() : fwdA.clone();
 
-        // Require three independent circumradius samples to agree within 10%.
-        // On a true arc all triplets lie on the same circle; nearly-collinear
-        // points or cross-junction geometry give wildly different values.
-        const r1 = _fitCircle3D([bwdFar, pa.clone(), pb.clone()]);
-        const r2 = _fitCircle3D([pa.clone(), pb.clone(), fwdFar]);
-        const r3 = _fitCircle3D([bwdFar, pa.clone(), fwdFar]);
-        if (r1 > 0 && r2 > 0 && r3 > 0) {
-            const rMin = Math.min(r1, r2, r3), rMax = Math.max(r1, r2, r3);
-            const rAvg = (r1 + r2 + r3) / 3;
-            if ((rMax - rMin) / rAvg < 0.1) return { type: 'arc', radius: rAvg };
+        // Two-part arc test:
+        // 1) Three independent circumradii must agree within 10% — ensures the
+        //    4 points lie on a consistent circle (rules out cross-junction noise).
+        // 2) pa/pb must deviate from the bwdFar→fwdFar chord by > 1% of that
+        //    chord — rules out nearly-collinear points whose large spurious radius
+        //    still passes the agreement test.
+        const chord  = fwdFar.clone().sub(bwdFar);
+        const chordLen = chord.length();
+        if (chordLen > 1e-8) {
+            const u = chord.clone().divideScalar(chordLen);
+            const sagA = pa.clone().sub(bwdFar); sagA.sub(u.clone().multiplyScalar(sagA.dot(u)));
+            const sagB = pb.clone().sub(bwdFar); sagB.sub(u.clone().multiplyScalar(sagB.dot(u)));
+            const sagitta = Math.max(sagA.length(), sagB.length());
+            if (sagitta > chordLen * 0.01) {
+                const r1 = _fitCircle3D([bwdFar, pa.clone(), pb.clone()]);
+                const r2 = _fitCircle3D([pa.clone(), pb.clone(), fwdFar]);
+                const r3 = _fitCircle3D([bwdFar, pa.clone(), fwdFar]);
+                if (r1 > 0 && r2 > 0 && r3 > 0) {
+                    const rMin = Math.min(r1, r2, r3), rMax = Math.max(r1, r2, r3);
+                    const rAvg = (r1 + r2 + r3) / 3;
+                    if ((rMax - rMin) / rAvg < 0.1) return { type: 'arc', radius: rAvg };
+                }
+            }
         }
     }
 
