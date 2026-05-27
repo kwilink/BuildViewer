@@ -937,8 +937,12 @@ function selectEntry(entry) {
     applySelection(entry.obj);
     showInfo(entry);
     showDimensions(entry);
-    // Scroll sidebar item into view
     entry.sidebarEl?.scrollIntoView({ block: 'nearest' });
+
+    // Pivot orbit target to the selected part's world-space center
+    const box = new THREE.Box3().setFromObject(entry.obj);
+    if (!box.isEmpty()) controls.target.copy(box.getCenter(new THREE.Vector3()));
+    controls.update();
 }
 
 // ── 3D dimension lines ────────────────────────────────────────────────────
@@ -1266,6 +1270,13 @@ function deselect() {
     applySelection(null);
     hideDimensions();
     hideInfo();
+
+    // Restore orbit target to the active model center
+    if (activeModel) {
+        const box = new THREE.Box3().setFromObject(activeModel.group);
+        if (!box.isEmpty()) controls.target.copy(box.getCenter(new THREE.Vector3()));
+        controls.update();
+    }
 }
 
 // ── Click / select / drag ─────────────────────────────────────────────────
