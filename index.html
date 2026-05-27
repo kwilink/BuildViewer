@@ -959,11 +959,6 @@ function selectEntry(entry) {
     showInfo(entry);
     showDimensions(entry);
     entry.sidebarEl?.scrollIntoView({ block: 'nearest' });
-
-    // Pivot orbit target to the selected part's world-space center
-    const box = new THREE.Box3().setFromObject(entry.obj);
-    if (!box.isEmpty()) controls.target.copy(box.getCenter(new THREE.Vector3()));
-    controls.update();
 }
 
 // ── 3D dimension lines ────────────────────────────────────────────────────
@@ -1291,13 +1286,6 @@ function deselect() {
     applySelection(null);
     hideDimensions();
     hideInfo();
-
-    // Restore orbit target to the active model center
-    if (activeModel) {
-        const box = new THREE.Box3().setFromObject(activeModel.group);
-        if (!box.isEmpty()) controls.target.copy(box.getCenter(new THREE.Vector3()));
-        controls.update();
-    }
 }
 
 // ── Click / select / drag ─────────────────────────────────────────────────
@@ -1338,6 +1326,16 @@ renderer.domElement.addEventListener('pointerdown', e => {
     const wasSelected = hit === selectedObj;
 
     if (!wasSelected && entry) selectEntry(entry);
+
+    // Start long-press timer using the entry already found — no second hitTest needed
+    if (entry && entry.obj.isMesh) {
+        _longPressEntry  = entry;
+        _longPressOrigin = { x: e.clientX, y: e.clientY };
+        _longPressTimer  = setTimeout(() => {
+            if (_longPressEntry && !isDragging) openIsolatedView(_longPressEntry);
+            _cancelLongPress();
+        }, LONG_PRESS_MS);
+    }
 
     // Drag plane through the exact surface click point, perpendicular to camera.
     // Using the surface point (not the object pivot) means the grabbed spot stays
@@ -1419,20 +1417,6 @@ function _cancelLongPress() {
     _longPressEntry = null;
     _longPressOrigin = null;
 }
-
-renderer.domElement.addEventListener('pointerdown', e => {
-    if (e.button !== 0) return;
-    const result = hitTest(e.clientX, e.clientY);
-    if (!result) return;
-    const entry = selectables.find(s => s.obj === result.obj);
-    if (!entry || !entry.obj.isMesh) return;
-    _longPressEntry  = entry;
-    _longPressOrigin = { x: e.clientX, y: e.clientY };
-    _longPressTimer  = setTimeout(() => {
-        if (_longPressEntry && !isDragging) openIsolatedView(_longPressEntry);
-        _cancelLongPress();
-    }, LONG_PRESS_MS);
-});
 
 renderer.domElement.addEventListener('pointermove', e => {
     if (!_longPressTimer || !_longPressOrigin) return;
