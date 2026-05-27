@@ -1310,18 +1310,6 @@ renderer.domElement.addEventListener('pointerdown', e => {
     dragState     = null;
     isDragging    = false;
 
-    // Long-press fires for the currently selected part regardless of where the
-    // hold lands — the user clicks once to select, then holds anywhere to isolate.
-    _cancelLongPress();
-    _longPressOrigin = { x: e.clientX, y: e.clientY };
-    _longPressTimer  = setTimeout(() => {
-        // Prefer the entry captured at press time; fall back to whatever is selected.
-        const sel = _longPressEntry
-                 || (selectedObj && selectables.find(s => s.obj === selectedObj));
-        if (sel && sel.obj.isMesh && !isDragging) openIsolatedView(sel);
-        _cancelLongPress();
-    }, LONG_PRESS_MS);
-
     const result = hitTest(e.clientX, e.clientY);
     if (!result) return;
 
@@ -1330,28 +1318,27 @@ renderer.domElement.addEventListener('pointerdown', e => {
     const wasSelected = hit === selectedObj;
 
     if (!wasSelected && entry) selectEntry(entry);
-    if (entry && entry.obj.isMesh) _longPressEntry = entry;
 
     // Drag plane through the exact surface click point, perpendicular to camera.
-    // Using the surface point (not the object pivot) means the grabbed spot stays
-    // pinned to the cursor with no parallax drift.
     const planeNormal = new THREE.Vector3();
     camera.getWorldDirection(planeNormal);
     const dragPlane    = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, hitPoint);
-    const dragPlaneHit = hitPoint.clone(); // cursor is exactly on the plane at press time
+    const dragPlaneHit = hitPoint.clone();
 
     const startWorldPos = new THREE.Vector3();
     hit.getWorldPosition(startWorldPos);
 
-    dragState = {
-        obj: hit, entry, wasSelected,
-        startLocalPos: hit.position.clone(),
-        startWorldPos,
-        dragPlane, dragPlaneHit,
-    };
+    dragState = { obj: hit, entry, wasSelected, startWorldPos, dragPlane, dragPlaneHit };
 
     controls.enabled = false;
     renderer.domElement.style.cursor = 'grabbing';
+});
+
+renderer.domElement.addEventListener('dblclick', e => {
+    const result = hitTest(e.clientX, e.clientY);
+    if (!result) return;
+    const entry = selectables.find(s => s.obj === result.obj);
+    if (entry && entry.obj.isMesh) openIsolatedView(entry);
 });
 
 renderer.domElement.addEventListener('pointermove', e => {
@@ -1359,7 +1346,7 @@ renderer.domElement.addEventListener('pointermove', e => {
 
     const dx = e.clientX - pointerDownAt.x;
     const dy = e.clientY - pointerDownAt.y;
-    if (!isDragging && Math.hypot(dx, dy) > 5) { isDragging = true; _cancelLongPress(); }
+    if (!isDragging && Math.hypot(dx, dy) > 5) { isDragging = true; }
     if (!isDragging) return;
 
     const rect = renderer.domElement.getBoundingClientRect();
@@ -1386,51 +1373,16 @@ renderer.domElement.addEventListener('pointerup', e => {
     controls.enabled = true;
     renderer.domElement.style.cursor = '';
 
-    // If isolated view just opened from this hold gesture, skip deselect so
-    // selectedObj stays intact for subsequent presses.
-    if (document.getElementById('iso-overlay').classList.contains('open')) {
-        dragState  = null;
-        isDragging = false;
-        return;
-    }
-
     const moved = Math.hypot(e.clientX - pointerDownAt.x, e.clientY - pointerDownAt.y) > 5;
 
     if (dragState) {
-        if (!isDragging) {
-            // Pure click: toggle selection if this object was already selected
-            if (dragState.wasSelected) deselect();
-        }
+        if (!isDragging && dragState.wasSelected) deselect();
         dragState  = null;
         isDragging = false;
     } else if (!moved) {
-        // Clicked empty space → deselect
         deselect();
     }
 });
-
-// ── Long-press → isolated view ────────────────────────────────────────────
-let _longPressTimer  = null;
-let _longPressEntry  = null;
-let _longPressOrigin = null;
-const LONG_PRESS_MS  = 500;
-
-function _cancelLongPress() {
-    if (_longPressTimer) { clearTimeout(_longPressTimer); _longPressTimer = null; }
-    _longPressEntry = null;
-    _longPressOrigin = null;
-}
-
-renderer.domElement.addEventListener('pointermove', e => {
-    if (!_longPressTimer || !_longPressOrigin) return;
-    if (Math.hypot(e.clientX - _longPressOrigin.x, e.clientY - _longPressOrigin.y) > 15)
-        _cancelLongPress();
-});
-
-renderer.domElement.addEventListener('pointerup',   _cancelLongPress);
-renderer.domElement.addEventListener('touchcancel', _cancelLongPress);
-// Prevent iOS long-press context menu from interrupting the hold gesture
-renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
 
 // ── Mobile sidebar ────────────────────────────────────────────────────────
 function openSidebar() {
@@ -1450,7 +1402,7 @@ sidebarOverlay.addEventListener('click', closeSidebar);
 if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
     const hint = document.getElementById('hint');
     if (hint) hint.innerHTML =
-        'Orbit · One finger drag<br>Pan · Two finger drag<br>Zoom · Pinch<br>Select · Tap';
+        'Orbit · One finger drag<br>Pan · Two finger drag<br>Zoom · Pinch<br>Select · Tap<br>Isolate · Double tap';
 }
 
 // ── File input ────────────────────────────────────────────────────────────
