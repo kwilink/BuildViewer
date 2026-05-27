@@ -827,6 +827,7 @@ function addModelToSidebar(filename, entries) {
                 ? `<span class="obj-vol">${vol.toFixed(2)} in³</span>` : '');
             li.title = name;
             li.addEventListener('click', () => { selectEntry(entry); closeSidebar(); });
+            if (entry.obj.isMesh) li.addEventListener('dblclick', e => { e.stopPropagation(); selectEntry(entry); closeSidebar(); openIsolatedView(entry); });
             entry.sidebarEl = li;
             list.appendChild(li);
         } else {
@@ -867,6 +868,7 @@ function addModelToSidebar(filename, entries) {
                 subli.innerHTML = name + (vols[i] !== null
                     ? `<span class="obj-vol">${vols[i].toFixed(2)} in³</span>` : '');
                 subli.addEventListener('click', () => { selectEntry(entry); closeSidebar(); });
+                if (entry.obj.isMesh) subli.addEventListener('dblclick', e => { e.stopPropagation(); selectEntry(entry); closeSidebar(); openIsolatedView(entry); });
                 entry.sidebarEl = subli;
                 sublist.appendChild(subli);
             });
@@ -1468,6 +1470,7 @@ function openIsolatedView(entry) {
     const _entryName = entry.name.trim() || '(unnamed)';
     document.getElementById('iso-title').textContent = _entryName;
     document.getElementById('iso-part-name').textContent = _entryName;
+    if (!entry.obj.geometry?.attributes?.position) return;
     _clearIsoPanel();
     _cleanupIso();
 
