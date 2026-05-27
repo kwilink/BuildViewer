@@ -1685,22 +1685,6 @@ function _isoBuildVtxMap() {
     }
 }
 
-// True if any point in pts deviates from the line (anchorPt → pts[last]) by > 0.5% of span.
-// Distinguishes arc walks (sagitta > 0) from straight-edge walks (deviation ≈ 0).
-function _walkDeviates(pts, anchorPt) {
-    if (!pts.length) return false;
-    const far = pts[pts.length - 1];
-    const chord = far.clone().sub(anchorPt);
-    const chordLen = chord.length();
-    if (chordLen < 1e-8) return false;
-    const u = chord.clone().divideScalar(chordLen);
-    for (const p of pts) {
-        const v = p.clone().sub(anchorPt);
-        const perp = v.clone().sub(u.clone().multiplyScalar(v.dot(u))).length();
-        if (perp > chordLen * 0.005) return true;
-    }
-    return false;
-}
 
 // Circumradius of 3 well-separated points = radius of circle through them (Heron's formula)
 function _fitCircle3D(pts) {
@@ -1747,8 +1731,9 @@ function _isoWalk(startVtxKey, prevSeg, outDir, continueFn) {
 }
 
 // Classify the clicked segment and return measurement:
-//   { type:'straight', start, end, length }  — merged collinear segments
-//   { type:'arc',  radius }                  — circular arc
+//   { type:'straight', start, end, length }  — merged collinear segments or isolated chord
+// Arc radius is only reliable from exact BREP data; tessellation alone cannot
+// distinguish a straight edge from a large-radius arc, so no arc type is returned here.
 function _isoAnalyzeEdge(startSeg) {
     if (!_isoVtxMap || !_isoEdgeLines) return null;
     const STRAIGHT_COS = 0.9998; // ≈ cos(1°)
@@ -1759,45 +1744,13 @@ function _isoAnalyzeEdge(startSeg) {
 
     const isStraight = (d, n) => Math.abs(d.dot(n)) >= STRAIGHT_COS;
 
-    // Walk straight in both directions
+    // Walk collinear neighbors in both directions
     const bwdPts = _isoWalk(kaKey, startSeg, dir.clone().negate(), isStraight);
     const fwdPts = _isoWalk(kbKey, startSeg, dir.clone(),          isStraight);
 
-    if (bwdPts.length || fwdPts.length) {
-        // Found collinear neighbors → it's part of a longer straight edge
-        const startPt = bwdPts.length ? bwdPts[bwdPts.length - 1] : pa.clone();
-        const endPt   = fwdPts.length ? fwdPts[fwdPts.length - 1] : pb.clone();
-        return { type: 'straight', start: startPt, end: endPt, length: startPt.distanceTo(endPt) };
-    }
-
-    // Check whether non-collinear neighbors exist (arc segments)
-    const hasNeighbors = ((_isoVtxMap.get(kaKey) || []).length > 1) ||
-                         ((_isoVtxMap.get(kbKey) || []).length > 1);
-    if (hasNeighbors) {
-        const isCurve = (d, n) => d.dot(n) > 0; // angle < 90° — same general curve
-        const bwdArc  = _isoWalk(kaKey, startSeg, dir.clone().negate(), isCurve);
-        const fwdArc  = _isoWalk(kbKey, startSeg, dir.clone(),          isCurve);
-        if (bwdArc.length > 0 && fwdArc.length > 0) {
-            // Only include walk directions that actually curve; straight-section
-            // neighbors pass isCurve (tangent continuity) but must be excluded.
-            const bwdCurves = _walkDeviates(bwdArc, pa);
-            const fwdCurves = _walkDeviates(fwdArc, pb);
-            if (bwdCurves || fwdCurves) {
-                const arcPts = [
-                    ...(bwdCurves ? [...bwdArc].reverse() : []),
-                    pa.clone(), pb.clone(),
-                    ...(fwdCurves ? fwdArc : [])
-                ];
-                if (arcPts.length >= 3) {
-                    const radius = _fitCircle3D(arcPts);
-                    if (radius > 0) return { type: 'arc', radius };
-                }
-            }
-        }
-    }
-
-    // Isolated segment → straight
-    return { type: 'straight', start: pa.clone(), end: pb.clone(), length: pa.distanceTo(pb) };
+    const startPt = bwdPts.length ? bwdPts[bwdPts.length - 1] : pa.clone();
+    const endPt   = fwdPts.length ? fwdPts[fwdPts.length - 1] : pb.clone();
+    return { type: 'straight', start: startPt, end: endPt, length: startPt.distanceTo(endPt) };
 }
 
 // 2D screen-space distance from point (px,py) to segment (ax,ay)-(bx,by)
