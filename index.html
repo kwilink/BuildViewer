@@ -526,10 +526,7 @@ loader.setLibraryPath('https://cdn.jsdelivr.net/npm/rhino3dm@8.6.1/');
 let _rh = null;
 const _brepEdgeMap = new Map(); // object GUID → [{type,start?,end?,radius?,pts}]
 
-// Normalize a GUID to lowercase, no braces — handles both rhino3dm and Three.js loader formats
-function _normGuid(g) {
-    return g ? String(g).toLowerCase().replace(/[{}]/g, '').trim() : '';
-}
+
 
 // ── Resize ────────────────────────────────────────────────────────────────
 function onResize() {
@@ -647,7 +644,7 @@ async function _extractFileBrepEdges(file) {
     for (let i = 0; i < objs.count; i++) {
         const obj  = objs.get(i);
         const attr = obj.attributes();
-        const guid = _normGuid(attr.id);
+        const guid = attr.id;
         attr.delete();
         const geom = obj.geometry();
         if (geom && geom instanceof rh.Brep) {
@@ -1502,10 +1499,7 @@ function openIsolatedView(entry) {
     _isoBuildVtxMap();
 
     // Build exact BREP edge list for this part if extraction has already finished.
-    // The Three.js Rhino3dmLoader may store the GUID as 'id', 'objectId', or 'Id'
-    // depending on how it serialises ObjectAttributes — try all common names.
-    const _attrObj  = entry.obj.userData?.attributes ?? {};
-    const _partGuid = _normGuid(_attrObj.id ?? _attrObj.objectId ?? _attrObj.Id ?? _attrObj.ObjectId ?? '');
+    const _partGuid = entry.obj.userData?.attributes?.id;
     const _rawEdges = _partGuid ? _brepEdgeMap.get(_partGuid) : null;
     if (_rawEdges) {
         _isoExactEdges = _rawEdges.map(e => _transformExactEdge(e, entry.obj.matrixWorld, ctr));
