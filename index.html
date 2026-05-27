@@ -1387,27 +1387,40 @@ renderer.domElement.addEventListener('pointerup', e => {
     }
 });
 
-// ── Double-click / double-tap → isolated view ─────────────────────────────
-renderer.domElement.addEventListener('dblclick', e => {
+// ── Long-press → isolated view ────────────────────────────────────────────
+let _longPressTimer  = null;
+let _longPressEntry  = null;
+let _longPressOrigin = null;
+const LONG_PRESS_MS  = 500;
+
+function _cancelLongPress() {
+    if (_longPressTimer) { clearTimeout(_longPressTimer); _longPressTimer = null; }
+    _longPressEntry = null;
+    _longPressOrigin = null;
+}
+
+renderer.domElement.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
     const result = hitTest(e.clientX, e.clientY);
     if (!result) return;
     const entry = selectables.find(s => s.obj === result.obj);
-    if (entry && entry.obj.isMesh) openIsolatedView(entry);
+    if (!entry || !entry.obj.isMesh) return;
+    _longPressEntry  = entry;
+    _longPressOrigin = { x: e.clientX, y: e.clientY };
+    _longPressTimer  = setTimeout(() => {
+        if (_longPressEntry && !isDragging) openIsolatedView(_longPressEntry);
+        _cancelLongPress();
+    }, LONG_PRESS_MS);
 });
 
-let _lastTap = 0;
-renderer.domElement.addEventListener('touchend', e => {
-    const now = Date.now();
-    if (now - _lastTap < 320 && e.changedTouches.length === 1) {
-        const t = e.changedTouches[0];
-        const result = hitTest(t.clientX, t.clientY);
-        if (result) {
-            const entry = selectables.find(s => s.obj === result.obj);
-            if (entry && entry.obj.isMesh) { e.preventDefault(); openIsolatedView(entry); }
-        }
-    }
-    _lastTap = now;
-}, { passive: false });
+renderer.domElement.addEventListener('pointermove', e => {
+    if (!_longPressTimer || !_longPressOrigin) return;
+    if (Math.hypot(e.clientX - _longPressOrigin.x, e.clientY - _longPressOrigin.y) > 5)
+        _cancelLongPress();
+});
+
+renderer.domElement.addEventListener('pointerup',  _cancelLongPress);
+renderer.domElement.addEventListener('pointerout', _cancelLongPress);
 
 // ── Mobile sidebar ────────────────────────────────────────────────────────
 function openSidebar() {
