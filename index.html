@@ -923,17 +923,6 @@ function addModelToSidebar(filename, entries) {
 }
 
 // ── Opacity helpers ───────────────────────────────────────────────────────
-function setMats(obj, transparent, opacity) {
-    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-    mats.forEach(m => {
-        if (!m) return;
-        m.transparent = transparent;
-        m.opacity     = opacity;
-        m.depthWrite  = !transparent;
-        m.needsUpdate = true;
-    });
-}
-
 function applySelection(selected) {
     selectables.forEach(({ obj, origColor, sidebarEl }) => {
         const isSelected = selected !== null && obj === selected;
@@ -2010,9 +1999,10 @@ function _cleanupIso() {
     _isoEdgeLines = null; _isoHoverLine = null; _isoPendingLine = null;
     _isoPendingSeg = -1; _isoHoveredSeg = -1; _isoVtxMap = null; _isoExactEdges = null;
     _isoDragMap.clear();
-    const container = document.getElementById('iso-viewport');
-    const hint = document.getElementById('iso-dbl-hint');
-    if (container) [...container.children].forEach(c => { if (c !== hint) c.remove(); });
+    const container  = document.getElementById('iso-viewport');
+    const hint       = document.getElementById('iso-dbl-hint');
+    const partNameEl = document.getElementById('iso-part-name');
+    if (container) [...container.children].forEach(c => { if (c !== hint && c !== partNameEl) c.remove(); });
     _isoScene = null; _isoCamera = null; _isoLabelRenderer = null;
 }
 
@@ -2020,6 +2010,7 @@ function closeIsolatedView() {
     document.getElementById('iso-overlay').classList.remove('open');
     _cleanupIso();
     _clearIsoPanel();
+    controls.enabled = true;
 }
 
 // Pointer handling – track each pointer separately to detect drag vs click
