@@ -1,6 +1,6 @@
 # Build Viewer
 
-A browser-based 3D viewer for Rhino `.3dm` files. Open a model, inspect individual parts, and read precise dimensions — no install required.
+A browser-based 3D viewer for Rhino `.3dm` files. Open a model, inspect individual parts, and read precise dimensions — no install required. Works on desktop and iPhone.
 
 ## What it does
 
@@ -13,6 +13,17 @@ A browser-based 3D viewer for Rhino `.3dm` files. Open a model, inspect individu
 - **Drag parts** to reposition them in the scene; Reset Positions restores originals
 - **Load multiple files** — each appears as a separate entry in the sidebar; clicking a header switches the active model
 
+## Isolated view
+
+Hold a click on any selected part for 500 ms to open it in a full-screen isolated view. You can also double-click a part in the sidebar list to open it directly.
+
+Inside the isolated view:
+- **Click any edge** to measure it — a confirmation prompt appears before committing the measurement
+- **Straight edges** show total length (L) by merging all collinear tessellation segments
+- **Curved edges** show radius (R) when exact BREP data is available from the file
+- **Dimensions display** in decimal inches, fractional inches, and feet/inches
+- The part name appears in the header and as an overlay label in the 3D viewport
+
 ## Tech stack
 
 Single-file HTML/CSS/JS — no build step.
@@ -23,6 +34,7 @@ Single-file HTML/CSS/JS — no build step.
 | Rhino parser | [Rhino3dmLoader](https://github.com/nicktindall/three-rhino3dm-loader) + rhino3dm WASM v8.6.1 |
 | Dimension labels | Three.js CSS2DRenderer |
 | OBB algorithm | Jacobi eigendecomposition of vertex covariance matrix |
+| Arc radius | Circumradius via exact BREP edge sampling (rhino3dm WASM) |
 
 ## Running locally
 
@@ -36,13 +48,27 @@ npx serve .
 
 ## Controls
 
-| Action | Mouse | Touch |
-|--------|-------|-------|
-| Orbit | Left drag | One-finger drag |
-| Pan | Right drag | Two-finger drag |
-| Zoom | Scroll wheel | Pinch |
-| Select | Click object | Tap |
-| Deselect | Click object again or background | Tap again or background |
+### Desktop
+
+| Action | Input |
+|--------|-------|
+| Orbit | Left drag |
+| Pan | Right drag |
+| Zoom | Scroll wheel |
+| Select part | Click |
+| Open isolated view | Click to select, then hold 500 ms anywhere |
+| Deselect | Click selected part again, or click background |
+
+### Mobile / iPhone
+
+| Action | Input |
+|--------|-------|
+| Orbit | One-finger drag |
+| Pan | Two-finger drag |
+| Zoom | Pinch |
+| Select part | Tap |
+| Open isolated view | Tap to select, then hold 500 ms anywhere |
+| Open isolated view (sidebar) | Double-tap sidebar row |
 
 ## Project structure
 
@@ -59,3 +85,5 @@ build_viewer/
 - Layer colors from the .3dm file are preserved on each object
 - Dimensions use the part's own principal axes (OBB), not the world grid — so a rotated part still shows correct L/W/T
 - Volume is computed via the divergence theorem (signed tetrahedral sum) over the mesh triangles
+- Edge measurement uses exact BREP geometry when available; falls back to merged tessellation segments for straight edges
+- iOS Safari: `touch-action: none` on the canvas prevents page-scroll interference; safe-area insets keep UI clear of the notch and home indicator
