@@ -1732,8 +1732,9 @@ function _isoWalk(startVtxKey, prevSeg, outDir, continueFn) {
 
 // Classify the clicked segment and return measurement:
 //   { type:'straight', start, end, length }  — merged collinear segments or isolated chord
-// Arc radius is only reliable from exact BREP data; tessellation alone cannot
-// distinguish a straight edge from a large-radius arc, so no arc type is returned here.
+// Classify the clicked segment:
+//   { type:'straight', start, end, length }  — merged collinear run
+//   { type:'arc',  radius }                  — curved segment (local 3-point fit)
 function _isoAnalyzeEdge(startSeg) {
     if (!_isoVtxMap || !_isoEdgeLines) return null;
     const STRAIGHT_COS = 0.9998; // ≈ cos(1°)
@@ -1748,9 +1749,34 @@ function _isoAnalyzeEdge(startSeg) {
     const bwdPts = _isoWalk(kaKey, startSeg, dir.clone().negate(), isStraight);
     const fwdPts = _isoWalk(kbKey, startSeg, dir.clone(),          isStraight);
 
-    const startPt = bwdPts.length ? bwdPts[bwdPts.length - 1] : pa.clone();
-    const endPt   = fwdPts.length ? fwdPts[fwdPts.length - 1] : pb.clone();
-    return { type: 'straight', start: startPt, end: endPt, length: startPt.distanceTo(endPt) };
+    if (bwdPts.length || fwdPts.length) {
+        // At least one collinear neighbor → merge into straight line
+        const startPt = bwdPts.length ? bwdPts[bwdPts.length - 1] : pa.clone();
+        const endPt   = fwdPts.length ? fwdPts[fwdPts.length - 1] : pb.clone();
+        return { type: 'straight', start: startPt, end: endPt, length: startPt.distanceTo(endPt) };
+    }
+
+    // No collinear neighbors — segment is at a direction change (likely on a curve).
+    // Use only the immediate single neighbor at each end for a local 3-point arc fit;
+    // this never walks across the straight/arc boundary.
+    const bwdNbrs = (_isoVtxMap.get(kaKey) || []).filter(s => s !== startSeg);
+    const fwdNbrs = (_isoVtxMap.get(kbKey) || []).filter(s => s !== startSeg);
+
+    if (bwdNbrs.length === 1 && fwdNbrs.length === 1) {
+        const bwdSeg = bwdNbrs[0];
+        const bwdA = _isoSegPt(bwdSeg, 0), bwdB = _isoSegPt(bwdSeg, 1);
+        const bwdFar = _isoVtxKey(bwdA) === kaKey ? bwdB.clone() : bwdA.clone();
+
+        const fwdSeg = fwdNbrs[0];
+        const fwdA = _isoSegPt(fwdSeg, 0), fwdB = _isoSegPt(fwdSeg, 1);
+        const fwdFar = _isoVtxKey(fwdA) === kbKey ? fwdB.clone() : fwdA.clone();
+
+        // Circumradius of bwdFar → pa → pb → fwdFar (uses first/mid/last)
+        const radius = _fitCircle3D([bwdFar, pa.clone(), pb.clone(), fwdFar]);
+        if (radius > 0) return { type: 'arc', radius };
+    }
+
+    return { type: 'straight', start: pa.clone(), end: pb.clone(), length: pa.distanceTo(pb) };
 }
 
 // 2D screen-space distance from point (px,py) to segment (ax,ay)-(bx,by)
