@@ -1323,7 +1323,8 @@ renderer.domElement.addEventListener('pointerdown', e => {
     _cancelLongPress();
     _longPressOrigin = { x: e.clientX, y: e.clientY };
     _longPressTimer  = setTimeout(() => {
-        const sel = selectedObj && selectables.find(s => s.obj === selectedObj);
+        const sel = (selectedObj && selectables.find(s => s.obj === selectedObj))
+                 || _longPressEntry;
         if (sel && sel.obj.isMesh && !isDragging) openIsolatedView(sel);
         _cancelLongPress();
     }, LONG_PRESS_MS);
@@ -1336,6 +1337,7 @@ renderer.domElement.addEventListener('pointerdown', e => {
     const wasSelected = hit === selectedObj;
 
     if (!wasSelected && entry) selectEntry(entry);
+    if (entry && entry.obj.isMesh) _longPressEntry = entry;
 
     // Drag plane through the exact surface click point, perpendicular to camera.
     // Using the surface point (not the object pivot) means the grabbed spot stays
@@ -1364,7 +1366,7 @@ renderer.domElement.addEventListener('pointermove', e => {
 
     const dx = e.clientX - pointerDownAt.x;
     const dy = e.clientY - pointerDownAt.y;
-    if (!isDragging && Math.hypot(dx, dy) > 5) isDragging = true;
+    if (!isDragging && Math.hypot(dx, dy) > 5) { isDragging = true; _cancelLongPress(); }
     if (!isDragging) return;
 
     const rect = renderer.domElement.getBoundingClientRect();
@@ -1420,12 +1422,11 @@ function _cancelLongPress() {
 
 renderer.domElement.addEventListener('pointermove', e => {
     if (!_longPressTimer || !_longPressOrigin) return;
-    if (Math.hypot(e.clientX - _longPressOrigin.x, e.clientY - _longPressOrigin.y) > 5)
+    if (Math.hypot(e.clientX - _longPressOrigin.x, e.clientY - _longPressOrigin.y) > 15)
         _cancelLongPress();
 });
 
 renderer.domElement.addEventListener('pointerup',   _cancelLongPress);
-renderer.domElement.addEventListener('pointerout',  _cancelLongPress);
 renderer.domElement.addEventListener('touchcancel', _cancelLongPress);
 // Prevent iOS long-press context menu from interrupting the hold gesture
 renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
