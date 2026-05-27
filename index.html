@@ -310,12 +310,7 @@
       padding: 8px 0; flex-shrink: 0;
     }
     .iso-back-btn svg { width: 20px; height: 20px; }
-    .iso-reset-btn {
-      background: none; border: 1px solid #553300; border-radius: 6px;
-      color: #884400; font-size: 12px; font-weight: 500; cursor: pointer;
-      padding: 6px 12px; flex-shrink: 0; transition: background 0.15s, color 0.15s;
-    }
-    .iso-reset-btn:hover { background: rgba(255,102,0,0.12); color: #ff6600; border-color: #ff6600; }
+
     #iso-title {
       flex: 1; text-align: center;
       font-size: 14px; font-weight: 600; color: #ff6600;
@@ -1435,7 +1430,6 @@ fileInput.addEventListener('change', e => {
 document.getElementById('iso-back-btn').addEventListener('click', () => closeIsolatedView());
 document.getElementById('iso-btn-yes').addEventListener('click', _isoConfirmYes);
 document.getElementById('iso-btn-no').addEventListener('click',  _isoConfirmNo);
-document.getElementById('iso-reset-dims').addEventListener('click', _isoResetDimensions);
 
 // ── Drag & drop ───────────────────────────────────────────────────────────
 let dragDepth = 0;
@@ -1507,8 +1501,11 @@ function openIsolatedView(entry) {
     _isoScene.add(_isoEdgeLines);
     _isoBuildVtxMap();
 
-    // Build exact BREP edge list for this part if extraction has already finished
-    const _partGuid = _normGuid(entry.obj.userData?.attributes?.id);
+    // Build exact BREP edge list for this part if extraction has already finished.
+    // The Three.js Rhino3dmLoader may store the GUID as 'id', 'objectId', or 'Id'
+    // depending on how it serialises ObjectAttributes — try all common names.
+    const _attrObj  = entry.obj.userData?.attributes ?? {};
+    const _partGuid = _normGuid(_attrObj.id ?? _attrObj.objectId ?? _attrObj.Id ?? _attrObj.ObjectId ?? '');
     const _rawEdges = _partGuid ? _brepEdgeMap.get(_partGuid) : null;
     if (_rawEdges) {
         _isoExactEdges = _rawEdges.map(e => _transformExactEdge(e, entry.obj.matrixWorld, ctr));
@@ -1762,7 +1759,7 @@ function _isoAnalyzeEdge(startSeg) {
         const isCurve = (d, n) => d.dot(n) > 0; // angle < 90° — same general curve
         const bwdArc  = _isoWalk(kaKey, startSeg, dir.clone().negate(), isCurve);
         const fwdArc  = _isoWalk(kbKey, startSeg, dir.clone(),          isCurve);
-        if (bwdArc.length || fwdArc.length) {
+        if (bwdArc.length > 0 && fwdArc.length > 0) {
             const allPts = [...bwdArc.reverse(), pa.clone(), pb.clone(), ...fwdArc];
             const radius = _fitCircle3D(allPts);
             if (radius > 0) return { type: 'arc', radius };
@@ -1853,6 +1850,7 @@ function _isoAskConfirm(segIdx) {
 // Step 2a: user confirmed → measure edge (exact BREP when available, tessellation fallback)
 function _isoConfirmYes() {
     if (_isoPendingSeg < 0) return;
+    _isoResetDimensions();
     const segIdx = _isoPendingSeg;
     _isoPendingSeg = -1;
     _isoSetLine(_isoPendingLine, -1);
@@ -2035,7 +2033,6 @@ function _isoOnUp(e) {
       Back
     </button>
     <div id="iso-title">Part</div>
-    <button class="iso-reset-btn" id="iso-reset-dims">Reset Dimensions</button>
   </div>
   <div id="iso-viewport">
     <div class="iso-dbl-hint" id="iso-dbl-hint">Click an edge to measure</div>
