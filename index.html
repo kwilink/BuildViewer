@@ -1843,8 +1843,8 @@ function _isoPickVertex(clientX, clientY) {
 }
 
 // Small sphere at a vertex position; renderOrder 3 so it renders on top
-function _isoMkVtxMarker(pos, color = 0xff6600) {
-    const geo = new THREE.SphereGeometry(Math.max(_isoMaxDim * 0.015, 0.04), 8, 8);
+function _isoMkVtxMarker(pos, color = 0xffff00) {
+    const geo = new THREE.SphereGeometry(Math.max(_isoMaxDim * 0.0075, 0.02), 8, 8);
     const mat = new THREE.MeshBasicMaterial({ color, depthTest: false });
     const m = new THREE.Mesh(geo, mat);
     m.renderOrder = 3;
