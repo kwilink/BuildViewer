@@ -1118,7 +1118,7 @@ function showDimensions(entry) {
         const pts = [];
         for (let i = 0; i < edges.length; i += 2) pts.push(co[edges[i]], co[edges[i+1]]);
         const wireGeo = new THREE.BufferGeometry().setFromPoints(pts);
-        const wireMat = new THREE.LineBasicMaterial({ color: 0xffffff, opacity: 0.18, transparent: true });
+        const wireMat = new THREE.LineBasicMaterial({ color: 0xffdd44, opacity: 0.35, transparent: true });
         dimGroup.add(new THREE.LineSegments(wireGeo, wireMat));
         mats.push(wireMat);
     }
