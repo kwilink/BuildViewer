@@ -65,7 +65,7 @@
       cursor: pointer; transition: background 0.1s, color 0.1s;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .obj-item:hover { background: rgba(255,102,0,0.08); color: #cc4400; }
+    .obj-item:hover { background: rgba(255,102,0,0.08); color: #ffdd44; }
     .obj-item.selected {
       background: rgba(255,102,0,0.18); color: #ff6600; font-weight: 600;
       border-left: 2px solid #ff6600; padding-left: 22px;
@@ -83,7 +83,7 @@
       cursor: pointer; display: flex; align-items: center;
       transition: background 0.1s, color 0.1s;
     }
-    .obj-group-header:hover { background: rgba(255,102,0,0.08); color: #cc4400; }
+    .obj-group-header:hover { background: rgba(255,102,0,0.08); color: #ffdd44; }
     .obj-toggle {
       font-size: 8px; margin-right: 5px; display: inline-block;
       transition: transform 0.15s; flex-shrink: 0;
@@ -96,7 +96,7 @@
       cursor: pointer; transition: background 0.1s, color 0.1s;
       display: flex; align-items: center;
     }
-    .obj-subitem:hover { background: rgba(255,102,0,0.08); color: #cc4400; }
+    .obj-subitem:hover { background: rgba(255,102,0,0.08); color: #ffdd44; }
     .obj-subitem.selected {
       background: rgba(255,102,0,0.18); color: #ff6600; font-weight: 600;
       border-left: 2px solid #ff6600; padding-left: 36px;
@@ -217,7 +217,7 @@
       font-size: 13px; letter-spacing: 0.2px;
     }
     .dim-frac {
-      color: #cc4400; font-variant-numeric: tabular-nums;
+      color: #ffdd44; font-variant-numeric: tabular-nums;
       font-size: 12px; letter-spacing: 0.1px; margin-left: 4px;
     }
     .dim-ft {
@@ -228,7 +228,7 @@
       margin-top: 10px; font-size: 11px; color: #663300;
       cursor: pointer; user-select: none;
     }
-    #info-deselect:hover { color: #ff6600; }
+    #info-deselect:hover { color: #ffdd44; }
 
     /* ── Corner hint ────────────────────────────────────────────────────── */
     #hint {
@@ -360,7 +360,7 @@
       color: #cc4400; margin-bottom: 4px;
     }
     .iso-edge-value { font-size: 22px; font-weight: 500; color: #ff6600; text-shadow: 0 0 10px #ff660088; }
-    .iso-edge-frac  { font-size: 14px; color: #cc4400; margin-left: 6px; }
+    .iso-edge-frac  { font-size: 14px; color: #ffdd44; margin-left: 6px; }
     .iso-edge-ft    { font-size: 12px; color: #884400; margin-left: 6px; }
     .iso-dbl-hint {
       position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
@@ -407,7 +407,7 @@
       color: #663300; font-size: 10px; cursor: pointer; padding: 2px 7px;
       transition: border-color 0.12s, color 0.12s; flex-shrink: 0;
     }
-    .copy-btn:hover { border-color: #ff6600; color: #ff6600; }
+    .copy-btn:hover { border-color: #ffdd44; color: #ffdd44; }
     .copy-btn.copied { color: #55aa55; border-color: #335533; }
     #iso-copy-btn {
       margin-top: 12px; width: 100%; padding: 10px; border-radius: 8px;
@@ -426,7 +426,7 @@
       color: #553300; font-size: 12px; font-weight: 600; cursor: pointer;
       transition: background 0.12s, border-color 0.12s, color 0.12s;
     }
-    .iso-mode-btn:hover:not(.active) { background: #1e1e1e; border-color: #444; color: #884400; }
+    .iso-mode-btn:hover:not(.active) { background: #1e1e1e; border-color: #444; color: #ffdd44; }
     .iso-mode-btn.active { background: #1e0800; border-color: #ff660055; color: #ff6600; }
   </style>
 </head>
@@ -1103,6 +1103,25 @@ function showDimensions(entry) {
     dimGroup = new THREE.Group();
     dimGroup.userData.mats = mats;
     scene.add(dimGroup);
+
+    // OBB wireframe — 8 corners × 12 edges
+    {
+        const mkCorner = (a, b, c) =>
+            center.clone().addScaledVector(A, a).addScaledVector(B, b).addScaledVector(C, c);
+        const co = [
+            mkCorner(eA.lo,eB.lo,eC.lo), mkCorner(eA.lo,eB.lo,eC.hi),
+            mkCorner(eA.lo,eB.hi,eC.lo), mkCorner(eA.lo,eB.hi,eC.hi),
+            mkCorner(eA.hi,eB.lo,eC.lo), mkCorner(eA.hi,eB.lo,eC.hi),
+            mkCorner(eA.hi,eB.hi,eC.lo), mkCorner(eA.hi,eB.hi,eC.hi),
+        ];
+        const edges = [0,4, 1,5, 2,6, 3,7, 0,2, 1,3, 4,6, 5,7, 0,1, 2,3, 4,5, 6,7];
+        const pts = [];
+        for (let i = 0; i < edges.length; i += 2) pts.push(co[edges[i]], co[edges[i+1]]);
+        const wireGeo = new THREE.BufferGeometry().setFromPoints(pts);
+        const wireMat = new THREE.LineBasicMaterial({ color: 0xffffff, opacity: 0.18, transparent: true });
+        dimGroup.add(new THREE.LineSegments(wireGeo, wireMat));
+        mats.push(wireMat);
+    }
 
     // Three dimension lines fan out from the (+A, +B, -C) corner of the OBB.
     // Each line runs along its own axis, offset outward along the other two.
