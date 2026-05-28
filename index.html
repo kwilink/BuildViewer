@@ -512,6 +512,9 @@ import * as THREE from 'three';
 import { OrbitControls }  from 'three/addons/controls/OrbitControls.js';
 import { Rhino3dmLoader } from 'three/addons/loaders/3DMLoader.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import { Line2 }        from 'three/addons/lines/Line2.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const viewport      = document.getElementById('viewport');
@@ -1508,8 +1511,8 @@ document.getElementById('iso-mode-vtx').addEventListener('click', () => {
     if (_isoVtxMode) return;
     _isoVtxMode = true;
     _isoPendingSeg = -1;
-    if (_isoHoverLine)   _isoSetLine(_isoHoverLine,   -1);
-    if (_isoPendingLine) _isoSetLine(_isoPendingLine, -1);
+    if (_isoHoverLine) _isoSetLine(_isoHoverLine, -1);
+    _isoSetPendingLine(-1);
     document.getElementById('iso-mode-vtx').classList.add('active');
     document.getElementById('iso-mode-edge').classList.remove('active');
     document.getElementById('iso-confirm-panel').classList.remove('visible');
@@ -1633,19 +1636,31 @@ function openIsolatedView(entry) {
         _isoExactEdges = _rawEdges.map(e => _transformExactEdge(e, entry.obj.matrixWorld, ctr));
     }
 
-    // Three overlay lines: hover (white), pending/confirm (yellow), measured (bright orange)
+    // Hover line (white, 1 px) — regular Line is fine at 1 px
     const mkOverlayLine = (color) => {
         const pts = [new THREE.Vector3(), new THREE.Vector3()];
         const g   = new THREE.BufferGeometry().setFromPoints(pts);
-        const mat = new THREE.LineBasicMaterial({ color, depthTest: false, linewidth: 1 });
+        const mat = new THREE.LineBasicMaterial({ color, depthTest: false });
         const l   = new THREE.Line(g, mat);
-        l.visible      = false;
-        l.renderOrder  = 2;
+        l.visible = false; l.renderOrder = 2;
         _isoScene.add(l);
         return l;
     };
-    _isoHoverLine   = mkOverlayLine(0xffffff);
-    _isoPendingLine = mkOverlayLine(0xffff00);   // yellow – awaiting confirmation
+    _isoHoverLine = mkOverlayLine(0xffffff);
+
+    // Pending confirm line — Line2 so linewidth actually works in WebGL
+    {
+        const g   = new LineGeometry();
+        g.setPositions([0, 0, 0, 1, 1, 1]); // dummy; updated in _isoSetPendingLine
+        const mat = new LineMaterial({
+            color: 0xffff00, linewidth: 3, depthTest: false,
+            resolution: new THREE.Vector2(container.clientWidth || 1, container.clientHeight || 1),
+        });
+        _isoPendingLine = new Line2(g, mat);
+        _isoPendingLine.visible = false;
+        _isoPendingLine.renderOrder = 2;
+        _isoScene.add(_isoPendingLine);
+    }
 
     // Floor grid
     const gridSz   = Math.ceil(_isoMaxDim * 2 / 10) * 10;
@@ -1683,6 +1698,7 @@ function openIsolatedView(entry) {
         _isoLabelRenderer.setSize(w, h);
         _isoCamera.aspect = w / h;
         _isoCamera.updateProjectionMatrix();
+        if (_isoPendingLine) _isoPendingLine.material.resolution.set(w, h);
     };
     _isoResizeObs = new ResizeObserver(onResize);
     _isoResizeObs.observe(container);
@@ -2017,11 +2033,21 @@ function _isoSetLine(line, segIdx) {
     line.visible = true;
 }
 
+// Line2 variant for the pending line (LineGeometry uses setPositions, not position attribute)
+function _isoSetPendingLine(segIdx) {
+    if (!_isoPendingLine) return;
+    if (segIdx < 0) { _isoPendingLine.visible = false; return; }
+    const [a, b] = _isoEdgePts(segIdx);
+    _isoPendingLine.geometry.setPositions([a.x, a.y, a.z, b.x, b.y, b.z]);
+    _isoPendingLine.computeLineDistances();
+    _isoPendingLine.visible = true;
+}
+
 // Step 1: user clicked an edge → highlight yellow, show confirm panel
 function _isoAskConfirm(segIdx) {
     _isoPendingSeg = segIdx;
-    _isoSetLine(_isoHoverLine,   -1);
-    _isoSetLine(_isoPendingLine, segIdx);
+    _isoSetLine(_isoHoverLine, -1);
+    _isoSetPendingLine(segIdx);
 
     document.getElementById('iso-edge-hint').style.display    = 'none';
     document.getElementById('iso-edge-dim').classList.remove('visible');
@@ -2165,8 +2191,8 @@ function _isoConfirmNo() {
 function _clearIsoPanel() {
     _isoPendingSeg = -1;
     _isoHoveredSeg = -1;
-    if (_isoHoverLine)   _isoSetLine(_isoHoverLine,   -1);
-    if (_isoPendingLine) _isoSetLine(_isoPendingLine, -1);
+    if (_isoHoverLine) _isoSetLine(_isoHoverLine, -1);
+    _isoSetPendingLine(-1);
     const hintEl = document.getElementById('iso-edge-hint');
     hintEl.textContent = _isoVtxMode
         ? (_isoVtx1 ? 'Click second vertex' : 'Click first vertex to measure')
