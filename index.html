@@ -387,6 +387,36 @@
       box-shadow: 0 2px 12px rgba(255,102,0,0.4);
     }
     .iso-btn-measure:active { opacity: 0.75; }
+
+    /* ── Sidebar search ──────────────────────────────────────────────────── */
+    #sidebar-search-wrap {
+      padding: 8px 10px 6px; border-bottom: 1px solid #ff660022; flex-shrink: 0;
+    }
+    #sidebar-search {
+      width: 100%; padding: 6px 10px; border-radius: 4px;
+      border: 1px solid #ff660033; background: #0e0e0e;
+      color: #ff6600; font-size: 12px; outline: none;
+      -webkit-appearance: none; appearance: none;
+    }
+    #sidebar-search::placeholder { color: #553300; }
+    #sidebar-search:focus { border-color: #ff660066; }
+
+    /* ── Copy buttons ────────────────────────────────────────────────────── */
+    .copy-btn {
+      background: none; border: 1px solid #ff660033; border-radius: 3px;
+      color: #663300; font-size: 10px; cursor: pointer; padding: 2px 7px;
+      transition: border-color 0.12s, color 0.12s; flex-shrink: 0;
+    }
+    .copy-btn:hover { border-color: #ff6600; color: #ff6600; }
+    .copy-btn.copied { color: #55aa55; border-color: #335533; }
+    #iso-copy-btn {
+      margin-top: 12px; width: 100%; padding: 10px; border-radius: 8px;
+      border: 1px solid #333; background: #1a1a1a;
+      color: #ff6600; font-size: 13px; font-weight: 600; cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    #iso-copy-btn:hover { background: #222; border-color: #ff660055; }
+    #iso-copy-btn.copied { color: #55aa55; border-color: #335533; }
   </style>
 </head>
 <body>
@@ -404,6 +434,9 @@
 
   <div id="sidebar-overlay"></div>
   <div id="sidebar">
+    <div id="sidebar-search-wrap">
+      <input id="sidebar-search" type="search" placeholder="Filter parts…" autocomplete="off" />
+    </div>
     <div id="sidebar-empty">Open a .3dm file to see models here.</div>
   </div>
 
@@ -433,7 +466,10 @@
     </div>
 
     <div id="info-panel">
-      <div class="info-label">Selected Object</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+        <div class="info-label" style="margin-bottom:0">Selected Object</div>
+        <button class="copy-btn" id="copy-dims-btn" title="Copy dimensions to clipboard">Copy</button>
+      </div>
       <div id="info-name">—</div>
       <div id="info-type"></div>
       <div class="info-dims">
@@ -843,6 +879,7 @@ function addModelToSidebar(filename, entries) {
             const entry = groupEntries[0];
             const li = document.createElement('li');
             li.className = 'obj-item';
+            li.dataset.name = name.toLowerCase();
             const vol = computeVolume(entry.obj);
             li.innerHTML = name + (vol !== null
                 ? `<span class="obj-vol">${vol.toFixed(2)} in³</span>` : '');
@@ -886,6 +923,7 @@ function addModelToSidebar(filename, entries) {
             groupEntries.forEach((entry, i) => {
                 const subli = document.createElement('li');
                 subli.className = 'obj-subitem';
+                subli.dataset.name = name.toLowerCase();
                 subli.innerHTML = name + (vols[i] !== null
                     ? `<span class="obj-vol">${vols[i].toFixed(2)} in³</span>` : '');
                 subli.addEventListener('click', () => { selectEntry(entry); closeSidebar(); });
@@ -947,7 +985,24 @@ function selectEntry(entry) {
     applySelection(entry.obj);
     showInfo(entry);
     showDimensions(entry);
+    fitCameraToEntry(entry);
     entry.sidebarEl?.scrollIntoView({ block: 'nearest' });
+}
+
+function fitCameraToEntry(entry) {
+    entry.obj.updateWorldMatrix(true, false);
+    const box = new THREE.Box3().setFromObject(entry.obj);
+    if (box.isEmpty()) return;
+    const center = new THREE.Vector3();
+    const size   = new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const dist   = (maxDim * 0.5) / Math.tan((camera.fov * Math.PI / 180) * 0.5) * 1.5;
+    const dir    = camera.position.clone().sub(controls.target).normalize();
+    controls.target.copy(center);
+    camera.position.copy(center).addScaledVector(dir, dist);
+    controls.update();
 }
 
 // ── 3D dimension lines ────────────────────────────────────────────────────
@@ -1398,6 +1453,29 @@ menuBtn.addEventListener('click', () => {
 });
 sidebarOverlay.addEventListener('click', closeSidebar);
 
+// ── Sidebar search ────────────────────────────────────────────────────────
+document.getElementById('sidebar-search').addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    sidebar.querySelectorAll('.obj-item').forEach(el => {
+        el.style.display = (!q || el.dataset.name.includes(q)) ? '' : 'none';
+    });
+    sidebar.querySelectorAll('.obj-group-header').forEach(header => {
+        const sublist = header.nextElementSibling;
+        if (!sublist) return;
+        let anyVisible = false;
+        sublist.querySelectorAll('.obj-subitem').forEach(sub => {
+            const show = !q || sub.dataset.name.includes(q);
+            sub.style.display = show ? '' : 'none';
+            if (show) anyVisible = true;
+        });
+        header.parentElement.style.display = anyVisible ? '' : 'none';
+        if (q && anyVisible) {
+            sublist.classList.add('open');
+            header.querySelector('.obj-toggle')?.classList.add('open');
+        }
+    });
+});
+
 // ── Touch hint ────────────────────────────────────────────────────────────
 if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
     const hint = document.getElementById('hint');
@@ -1420,6 +1498,32 @@ fileInput.addEventListener('change', e => {
 document.getElementById('iso-back-btn').addEventListener('click', () => closeIsolatedView());
 document.getElementById('iso-btn-yes').addEventListener('click', _isoConfirmYes);
 document.getElementById('iso-btn-no').addEventListener('click',  _isoConfirmNo);
+
+document.getElementById('copy-dims-btn').addEventListener('click', () => {
+    const lines = [
+        infoName.textContent,
+        `L  ${dimX.textContent}"  ${dimXFrac.textContent}  ${dimXFt.textContent}`,
+        `W  ${dimY.textContent}"  ${dimYFrac.textContent}  ${dimYFt.textContent}`,
+        `T  ${dimZ.textContent}"  ${dimZFrac.textContent}  ${dimZFt.textContent}`,
+    ];
+    if (volSection.style.display !== 'none')
+        lines.push(`Vol  ${volIn3El.textContent} in³ / ${volFt3El.textContent} ft³`);
+    navigator.clipboard.writeText(lines.join('\n'));
+    const btn = document.getElementById('copy-dims-btn');
+    btn.textContent = '✓ Copied';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+});
+
+document.getElementById('iso-copy-btn').addEventListener('click', () => {
+    const name  = document.getElementById('iso-title').textContent;
+    const lines = [name, ..._isoMeasurements.map(m => m.text)];
+    navigator.clipboard.writeText(lines.join('\n'));
+    const btn = document.getElementById('iso-copy-btn');
+    btn.textContent = '✓ Copied';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy all measurements'; btn.classList.remove('copied'); }, 1500);
+});
 
 // ── Drag & drop ───────────────────────────────────────────────────────────
 let dragDepth = 0;
@@ -1903,7 +2007,8 @@ function _isoConfirmYes() {
     label.position.copy(midPt);
     _isoScene.add(label);
 
-    _isoMeasurements.push({ line, label });
+    _isoMeasurements.push({ line, label, text: labelVal });
+    document.getElementById('iso-copy-btn').style.display = '';
 }
 
 // Step 2b: user cancelled
@@ -1932,6 +2037,7 @@ function _isoResetDimensions() {
         }
     }
     _isoMeasurements = [];
+    document.getElementById('iso-copy-btn').style.display = 'none';
     document.getElementById('iso-edge-hint').style.display = '';
     document.getElementById('iso-edge-dim').classList.remove('visible');
 }
@@ -2028,6 +2134,7 @@ function _isoOnUp(e) {
         <span class="iso-edge-ft"   id="iso-edge-ft"></span>
       </div>
     </div>
+    <button id="iso-copy-btn" style="display:none">Copy all measurements</button>
   </div>
 </div>
 </body>
