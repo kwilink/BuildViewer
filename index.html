@@ -985,24 +985,7 @@ function selectEntry(entry) {
     applySelection(entry.obj);
     showInfo(entry);
     showDimensions(entry);
-    fitCameraToEntry(entry);
     entry.sidebarEl?.scrollIntoView({ block: 'nearest' });
-}
-
-function fitCameraToEntry(entry) {
-    entry.obj.updateWorldMatrix(true, false);
-    const box = new THREE.Box3().setFromObject(entry.obj);
-    if (box.isEmpty()) return;
-    const center = new THREE.Vector3();
-    const size   = new THREE.Vector3();
-    box.getCenter(center);
-    box.getSize(size);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const dist   = (maxDim * 0.5) / Math.tan((camera.fov * Math.PI / 180) * 0.5) * 1.5;
-    const dir    = camera.position.clone().sub(controls.target).normalize();
-    controls.target.copy(center);
-    camera.position.copy(center).addScaledVector(dir, dist);
-    controls.update();
 }
 
 // ── 3D dimension lines ────────────────────────────────────────────────────
