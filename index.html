@@ -417,6 +417,17 @@
     }
     #iso-copy-btn:hover { background: #222; border-color: #ff660055; }
     #iso-copy-btn.copied { color: #55aa55; border-color: #335533; }
+
+    /* ── Iso measurement mode toggle ─────────────────────────────────────── */
+    #iso-mode-wrap { display: flex; gap: 6px; margin-bottom: 12px; }
+    .iso-mode-btn {
+      flex: 1; padding: 8px 6px; border-radius: 6px;
+      border: 1px solid #2a2a2a; background: #141414;
+      color: #553300; font-size: 12px; font-weight: 600; cursor: pointer;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+    .iso-mode-btn:hover:not(.active) { background: #1e1e1e; border-color: #444; color: #884400; }
+    .iso-mode-btn.active { background: #1e0800; border-color: #ff660055; color: #ff6600; }
   </style>
 </head>
 <body>
@@ -1482,6 +1493,30 @@ document.getElementById('iso-back-btn').addEventListener('click', () => closeIso
 document.getElementById('iso-btn-yes').addEventListener('click', _isoConfirmYes);
 document.getElementById('iso-btn-no').addEventListener('click',  _isoConfirmNo);
 
+document.getElementById('iso-mode-edge').addEventListener('click', () => {
+    if (!_isoVtxMode) return;
+    _isoVtxMode = false;
+    _resetVtxState();
+    document.getElementById('iso-mode-edge').classList.add('active');
+    document.getElementById('iso-mode-vtx').classList.remove('active');
+    document.getElementById('iso-confirm-panel').classList.remove('visible');
+    document.getElementById('iso-edge-hint').textContent = 'Click any edge on the part to measure it';
+    document.getElementById('iso-edge-hint').style.display = '';
+});
+
+document.getElementById('iso-mode-vtx').addEventListener('click', () => {
+    if (_isoVtxMode) return;
+    _isoVtxMode = true;
+    _isoPendingSeg = -1;
+    if (_isoHoverLine)   _isoSetLine(_isoHoverLine,   -1);
+    if (_isoPendingLine) _isoSetLine(_isoPendingLine, -1);
+    document.getElementById('iso-mode-vtx').classList.add('active');
+    document.getElementById('iso-mode-edge').classList.remove('active');
+    document.getElementById('iso-confirm-panel').classList.remove('visible');
+    document.getElementById('iso-edge-hint').textContent = 'Click first vertex to measure';
+    document.getElementById('iso-edge-hint').style.display = '';
+});
+
 document.getElementById('copy-dims-btn').addEventListener('click', () => {
     const lines = [
         infoName.textContent,
@@ -1531,9 +1566,16 @@ let _isoRenderer = null, _isoScene = null, _isoCamera = null, _isoControls = nul
 let _isoLabelRenderer = null, _isoResizeObs = null, _isoAnimId = null;
 let _isoEdgeLines = null, _isoHoverLine = null, _isoPendingLine = null;
 let _isoHoveredSeg = -1, _isoPendingSeg = -1, _isoMaxDim = 1;
-let _isoMeasurements = []; // [{line: THREE.Line, label: CSS2DObject}] — accumulates across confirmations
+let _isoMeasurements = []; // [{line, label, text, dots?}]
 let _isoVtxMap = null;      // vertex-key → [segIdx, …] adjacency built per isolated view
 let _isoExactEdges = null; // exact BREP edges transformed to isolated-view space
+// Vertex-to-vertex measurement state
+let _isoVtxMode     = false;
+let _isoVtx1        = null;   // THREE.Vector3 — first picked vertex
+let _isoVtxMarkers  = [];     // sphere Meshes in scene (confirmed dots, up to 2)
+let _isoVtxLine     = null;   // pending line between v1 and v2 (yellow until confirmed)
+let _isoVtxPending  = null;   // { v1, v2 } when awaiting confirm
+let _isoVtxHoverMkr = null;   // hover sphere (desktop only)
 // Drag detection: track pointer down position per pointerId
 const _isoDragMap = new Map();
 
@@ -1544,6 +1586,9 @@ function openIsolatedView(entry) {
     document.getElementById('iso-title').textContent = _entryName;
     document.getElementById('iso-part-name').textContent = _entryName;
     if (!entry.obj.geometry?.attributes?.position) return;
+    _isoVtxMode = false;
+    document.getElementById('iso-mode-edge').classList.add('active');
+    document.getElementById('iso-mode-vtx').classList.remove('active');
     _clearIsoPanel();
     _cleanupIso();
 
@@ -1773,6 +1818,84 @@ function _fitCircle3D(pts) {
     return (a * b * c) / (4 * Math.sqrt(area2));
 }
 
+// ── Vertex-to-vertex measurement helpers ─────────────────────────────────
+
+// Screen-space vertex picker: finds the unique edge vertex closest to the click
+// within THRESH pixels. Uses _isoVtxMap keys (already deduplicated).
+function _isoPickVertex(clientX, clientY) {
+    if (!_isoVtxMap || !_isoRenderer) return null;
+    const THRESH = 26;
+    const rect = _isoRenderer.domElement.getBoundingClientRect();
+    const cx = clientX - rect.left, cy = clientY - rect.top;
+    const w = rect.width, h = rect.height;
+    const v = new THREE.Vector3();
+    let bestDist = THRESH, bestPos = null;
+    for (const key of _isoVtxMap.keys()) {
+        const [x, y, z] = key.split(',').map(Number);
+        v.set(x, y, z).project(_isoCamera);
+        if (v.z > 1) continue;
+        const sx = (v.x + 1) * 0.5 * w;
+        const sy = (-v.y + 1) * 0.5 * h;
+        const d = Math.hypot(cx - sx, cy - sy);
+        if (d < bestDist) { bestDist = d; bestPos = new THREE.Vector3(x, y, z); }
+    }
+    return bestPos;
+}
+
+// Small sphere at a vertex position; renderOrder 3 so it renders on top
+function _isoMkVtxMarker(pos, color = 0xff6600) {
+    const geo = new THREE.SphereGeometry(Math.max(_isoMaxDim * 0.015, 0.04), 8, 8);
+    const mat = new THREE.MeshBasicMaterial({ color, depthTest: false });
+    const m = new THREE.Mesh(geo, mat);
+    m.renderOrder = 3;
+    m.position.copy(pos);
+    _isoScene.add(m);
+    return m;
+}
+
+function _resetVtxState() {
+    _isoVtx1 = null;
+    _isoVtxPending = null;
+    for (const m of _isoVtxMarkers) {
+        _isoScene?.remove(m); m.geometry.dispose(); m.material.dispose();
+    }
+    _isoVtxMarkers = [];
+    if (_isoVtxLine) {
+        _isoScene?.remove(_isoVtxLine);
+        _isoVtxLine.geometry.dispose(); _isoVtxLine.material.dispose();
+        _isoVtxLine = null;
+    }
+    if (_isoVtxHoverMkr) {
+        _isoScene?.remove(_isoVtxHoverMkr);
+        _isoVtxHoverMkr.geometry.dispose(); _isoVtxHoverMkr.material.dispose();
+        _isoVtxHoverMkr = null;
+    }
+}
+
+// Called when user clicks in vertex mode; builds up v1 → v2 → confirm flow
+function _isoHandleVtxClick(clientX, clientY) {
+    if (_isoVtxPending) return;
+    const vtx = _isoPickVertex(clientX, clientY);
+    if (!vtx) return;
+    if (!_isoVtx1) {
+        _isoVtx1 = vtx;
+        _isoVtxMarkers.push(_isoMkVtxMarker(vtx));
+        document.getElementById('iso-edge-hint').textContent = 'Click second vertex';
+    } else {
+        // Second vertex — draw yellow preview line and ask to confirm
+        _isoVtxMarkers.push(_isoMkVtxMarker(vtx));
+        const g   = new THREE.BufferGeometry().setFromPoints([_isoVtx1, vtx]);
+        const mat = new THREE.LineBasicMaterial({ color: 0xffff00, depthTest: false });
+        _isoVtxLine = new THREE.Line(g, mat);
+        _isoVtxLine.renderOrder = 2;
+        _isoScene.add(_isoVtxLine);
+        _isoVtxPending = { v1: _isoVtx1, v2: vtx };
+        document.getElementById('iso-edge-hint').style.display = 'none';
+        document.getElementById('iso-edge-dim').classList.remove('visible');
+        document.getElementById('iso-confirm-panel').classList.add('visible');
+    }
+}
+
 // Update a highlight line from two explicit points (not a segment index)
 function _isoSetLinePts(line, a, b) {
     const posAttr = line.geometry.attributes.position;
@@ -1905,8 +2028,47 @@ function _isoAskConfirm(segIdx) {
     document.getElementById('iso-confirm-panel').classList.toggle('visible', segIdx >= 0);
 }
 
-// Step 2a: user confirmed → measure edge (exact BREP when available, tessellation fallback)
+// Step 2a: user confirmed → measure edge or vertex-to-vertex
 function _isoConfirmYes() {
+    // ── Vertex-to-vertex path ──
+    if (_isoVtxPending) {
+        const { v1, v2 } = _isoVtxPending;
+        _isoResetDimensions();
+        _isoVtxPending = null;
+        document.getElementById('iso-confirm-panel').classList.remove('visible');
+
+        const dist     = v1.distanceTo(v2);
+        const labelVal = inToFrac(dist);
+        document.getElementById('iso-edge-val').textContent  = dist.toFixed(3) + '"';
+        document.getElementById('iso-edge-frac').textContent = labelVal;
+        document.getElementById('iso-edge-ft').textContent   = inToFtIn(dist);
+        document.getElementById('iso-edge-dim').classList.add('visible');
+
+        // Promote pending line from yellow to orange
+        _isoVtxLine.material.color.set(0xff6600);
+        const committedLine = _isoVtxLine;
+        _isoVtxLine = null; // ownership transferred — don't dispose in _resetVtxState
+
+        // Label at midpoint
+        const midPt = v1.clone().lerp(v2, 0.5);
+        const div = document.createElement('div');
+        div.className = 'dim-label-3d';
+        div.textContent = labelVal;
+        const label = new CSS2DObject(div);
+        label.position.copy(midPt);
+        _isoScene.add(label);
+
+        const dots = [..._isoVtxMarkers];
+        _isoVtx1 = null; _isoVtxMarkers = [];
+
+        _isoMeasurements.push({ line: committedLine, label, text: labelVal, dots });
+        document.getElementById('iso-copy-btn').style.display = '';
+        document.getElementById('iso-edge-hint').textContent = 'Click first vertex to measure';
+        document.getElementById('iso-edge-hint').style.display = '';
+        return;
+    }
+
+    // ── Edge path ──
     if (_isoPendingSeg < 0) return;
     _isoResetDimensions();
     const segIdx = _isoPendingSeg;
@@ -1996,6 +2158,7 @@ function _isoConfirmYes() {
 
 // Step 2b: user cancelled
 function _isoConfirmNo() {
+    if (_isoVtxPending) _resetVtxState();
     _clearIsoPanel();
 }
 
@@ -2004,7 +2167,11 @@ function _clearIsoPanel() {
     _isoHoveredSeg = -1;
     if (_isoHoverLine)   _isoSetLine(_isoHoverLine,   -1);
     if (_isoPendingLine) _isoSetLine(_isoPendingLine, -1);
-    document.getElementById('iso-edge-hint').style.display = '';
+    const hintEl = document.getElementById('iso-edge-hint');
+    hintEl.textContent = _isoVtxMode
+        ? (_isoVtx1 ? 'Click second vertex' : 'Click first vertex to measure')
+        : 'Click any edge on the part to measure it';
+    hintEl.style.display = '';
     document.getElementById('iso-confirm-panel').classList.remove('visible');
     document.getElementById('iso-edge-dim').classList.remove('visible');
 }
@@ -2017,6 +2184,10 @@ function _isoResetDimensions() {
         if (m.label) {
             if (m.label.element?.parentNode) m.label.element.parentNode.removeChild(m.label.element);
             if (_isoScene) _isoScene.remove(m.label);
+        }
+        for (const dot of (m.dots || [])) {
+            if (_isoScene) _isoScene.remove(dot);
+            dot.geometry.dispose(); dot.material.dispose();
         }
     }
     _isoMeasurements = [];
@@ -2039,6 +2210,7 @@ function _cleanupIso() {
     _isoResetDimensions();
     _isoEdgeLines = null; _isoHoverLine = null; _isoPendingLine = null;
     _isoPendingSeg = -1; _isoHoveredSeg = -1; _isoVtxMap = null; _isoExactEdges = null;
+    _resetVtxState();
     _isoDragMap.clear();
     const container  = document.getElementById('iso-viewport');
     const hint       = document.getElementById('iso-dbl-hint');
@@ -2064,9 +2236,30 @@ function _isoOnMove(e) {
     if (rec) {
         const dx = e.clientX - rec.x, dy = e.clientY - rec.y;
         if (Math.hypot(dx, dy) > 6) rec.dragged = true;
-        return; // button held – skip hover
+        return;
     }
-    // No button – hover highlight (skip when confirm panel is open)
+    if (_isoVtxMode) {
+        // Hover: show a white sphere on the nearest vertex (desktop only)
+        if (_isoVtxPending) return;
+        const vtx = _isoPickVertex(e.clientX, e.clientY);
+        if (vtx) {
+            if (!_isoVtxHoverMkr) {
+                _isoVtxHoverMkr = _isoMkVtxMarker(vtx, 0xffffff);
+            } else {
+                _isoVtxHoverMkr.position.copy(vtx);
+            }
+            _isoRenderer.domElement.style.cursor = 'crosshair';
+        } else {
+            if (_isoVtxHoverMkr) {
+                _isoScene.remove(_isoVtxHoverMkr);
+                _isoVtxHoverMkr.geometry.dispose(); _isoVtxHoverMkr.material.dispose();
+                _isoVtxHoverMkr = null;
+            }
+            _isoRenderer.domElement.style.cursor = '';
+        }
+        return;
+    }
+    // Edge mode hover highlight (skip when confirm panel is open)
     if (_isoPendingSeg >= 0) return;
     const seg = _isoRaycast(e.clientX, e.clientY);
     if (seg === _isoHoveredSeg) return;
@@ -2078,10 +2271,13 @@ function _isoOnMove(e) {
 function _isoOnUp(e) {
     const rec = _isoDragMap.get(e.pointerId);
     _isoDragMap.delete(e.pointerId);
-    if (!rec || rec.dragged) return; // was a drag (orbit)
-    // It was a genuine click – raycast for edge
-    const seg = _isoRaycast(e.clientX, e.clientY);
-    if (seg >= 0) _isoAskConfirm(seg);
+    if (!rec || rec.dragged) return;
+    if (_isoVtxMode) {
+        _isoHandleVtxClick(e.clientX, e.clientY);
+    } else {
+        const seg = _isoRaycast(e.clientX, e.clientY);
+        if (seg >= 0) _isoAskConfirm(seg);
+    }
 }
 </script>
 
@@ -2101,6 +2297,10 @@ function _isoOnUp(e) {
     <div id="iso-part-name"></div>
   </div>
   <div id="iso-edge-panel">
+    <div id="iso-mode-wrap">
+      <button class="iso-mode-btn active" id="iso-mode-edge">Edge Length</button>
+      <button class="iso-mode-btn"        id="iso-mode-vtx">Vertex to Vertex</button>
+    </div>
     <div class="iso-edge-hint" id="iso-edge-hint">Click any edge on the part to measure it</div>
     <div id="iso-confirm-panel">
       <div class="iso-confirm-q">Is this the edge you want to measure?</div>
