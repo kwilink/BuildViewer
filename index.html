@@ -2022,6 +2022,7 @@ function _isoHandleVtxClick(clientX, clientY) {
     const vtx = _isoPickVertex(clientX, clientY);
     if (!vtx) return;
     if (!_isoVtx1) {
+        _isoResetDimensions(); // clear any previous committed measurement
         _isoVtx1 = vtx;
         _isoVtxMarkers.push(_isoMkVtxMarker(vtx));
         document.getElementById('iso-edge-hint').textContent = 'Click second vertex';
