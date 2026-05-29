@@ -428,6 +428,60 @@
     }
     .iso-mode-btn:hover:not(.active) { background: #1e1e1e; border-color: #444; color: #ffdd44; }
     .iso-mode-btn.active { background: #1e0800; border-color: #ff660055; color: #ff6600; }
+
+    /* ── Iso body layout ─────────────────────────────────────────────────────── */
+    #iso-body-row { display: flex; flex: 1; overflow: hidden; min-height: 0; }
+    #iso-right-col { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+
+    /* ── Shop Drawing panel ──────────────────────────────────────────────────── */
+    #iso-drawing-panel {
+      width: 0; overflow: hidden; flex-shrink: 0;
+      display: flex; flex-direction: column;
+      background: #141414; border-right: 0px solid #2a2a2a;
+      transition: width 0.22s ease, border-right-width 0.22s;
+    }
+    #iso-drawing-panel.open { width: 340px; border-right-width: 1px; }
+    #sd-panel-head {
+      padding: 10px 14px; flex-shrink: 0; display: flex; align-items: center;
+      border-bottom: 1px solid #ff660022;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.8px;
+      color: #884400; text-transform: uppercase;
+    }
+    #sd-gen-btn {
+      margin-left: auto; padding: 4px 12px; border-radius: 4px;
+      border: 1px solid #ff660055; background: transparent;
+      color: #ff6600; font-size: 11px; cursor: pointer; white-space: nowrap;
+      transition: border-color 0.12s;
+    }
+    #sd-gen-btn:hover { border-color: #ff6600; }
+    #sd-gen-btn:disabled { opacity: 0.4; cursor: default; }
+    #sd-scroll { flex: 1; overflow-y: auto; padding: 10px; }
+    #sd-empty { font-size: 11px; color: #553300; text-align: center; line-height: 1.8; padding: 12px 0; }
+    #sd-wrap { display: none; }
+    #sd-wrap.visible { display: block; }
+    #sd-wrap svg { width: 100%; height: auto; display: block; }
+    #sd-dl-btn {
+      display: none; flex-shrink: 0; margin: 8px 10px; padding: 8px 0;
+      border-radius: 6px; border: 1px solid #ff660055; background: #1a0a00;
+      color: #ff6600; font-size: 12px; font-weight: 600; cursor: pointer;
+      transition: border-color 0.12s;
+    }
+    #sd-dl-btn.visible { display: block; }
+    #sd-dl-btn:hover { border-color: #ff6600; }
+
+    /* Drawing toggle button in iso header */
+    #sd-toggle-btn {
+      flex-shrink: 0; padding: 5px 12px; border-radius: 4px;
+      border: 1px solid #ff660033; background: transparent;
+      color: #663300; font-size: 12px; cursor: pointer;
+      transition: color 0.12s, border-color 0.12s;
+    }
+    #sd-toggle-btn.open { color: #ff6600; border-color: #ff660066; }
+    #sd-toggle-btn:hover { color: #ffdd44; border-color: #ffdd4466; }
+
+    @media (max-width: 768px) {
+      #iso-drawing-panel.open { width: 260px; }
+    }
   </style>
 </head>
 <body>
@@ -592,6 +646,9 @@ let selectables  = [];   // flat across all loaded models: { obj, name, type, or
 let selectedObj  = null;
 let activeModel  = null; // the one currently visible model
 let dimGroup     = null; // THREE.Group holding active 3D dimension lines
+let _sdCurrentEntry = null; // entry open in isolated view (for shop drawing)
+let _sdCurrentSVG   = '';
+let _sdCurrentName  = '';
 
 // ── Loader ────────────────────────────────────────────────────────────────
 const loader = new Rhino3dmLoader();
@@ -1555,6 +1612,18 @@ document.getElementById('copy-dims-btn').addEventListener('click', () => {
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
 });
 
+// ── Shop Drawing panel controls ────────────────────────────────────────────
+document.getElementById('sd-toggle-btn').addEventListener('click', () => {
+    const panel = document.getElementById('iso-drawing-panel');
+    const btn   = document.getElementById('sd-toggle-btn');
+    panel.classList.toggle('open');
+    btn.classList.toggle('open');
+});
+document.getElementById('sd-gen-btn').addEventListener('click', () => {
+    if (_sdCurrentEntry) _sdGenerate(_sdCurrentEntry);
+});
+document.getElementById('sd-dl-btn').addEventListener('click', _sdDownload);
+
 document.getElementById('iso-copy-btn').addEventListener('click', () => {
     const name  = document.getElementById('iso-title').textContent;
     const lines = [name, ..._isoMeasurements.map(m => m.text)];
@@ -1613,6 +1682,8 @@ function openIsolatedView(entry) {
     document.getElementById('iso-mode-vtx').classList.remove('active');
     _clearIsoPanel();
     _cleanupIso();
+    _sdCurrentEntry = entry;
+    _sdResetPanel();
 
     // Scene + lights
     _isoScene = new THREE.Scene();
@@ -2271,6 +2342,284 @@ function closeIsolatedView() {
     controls.enabled = true;
 }
 
+// ── Shop Drawing panel ────────────────────────────────────────────────────
+// 3-view portrait SVG (Plan / Front Elevation / Right Elevation + title block)
+const _sdPW = 600, _sdPH = 910;
+const _sdM = 24, _sdDS = 22, _sdGap = 10, _sdTH = 50;
+const _sdDA_W = 552, _sdVH = 260; // view box height per row
+const _sdVB = {
+    plan:  [24, 24,  552, 260],
+    front: [24, 294, 552, 260],
+    right: [24, 564, 552, 260],
+};
+const _sdTB = [24, 834, 552, 50];
+const _sdCAMS = {
+    plan:  { eye: new THREE.Vector3(0, 1, 0).normalize(), up: new THREE.Vector3(0, 0, -1) },
+    front: { eye: new THREE.Vector3(0, 0, 1).normalize(), up: new THREE.Vector3(0, 1,  0) },
+    right: { eye: new THREE.Vector3(1, 0, 0).normalize(), up: new THREE.Vector3(0, 1,  0) },
+};
+const _sdDIM_ASSIGN = { plan: ['W','D'], front: ['W','H'], right: ['D','H'] };
+
+function _sdR(v)       { return +v.toFixed(1); }
+function _sdGcd(a, b)  { return b === 0 ? a : _sdGcd(b, a % b); }
+function _sdEsc(s)     { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function _sdFmtIn(v) {
+    if (v < 0.0005) return '0"';
+    const whole = Math.floor(v);
+    let num = Math.round((v - whole) * 16);
+    if (num === 16) return `${whole + 1}"`;
+    if (num === 0)  return `${whole}"`;
+    const g = _sdGcd(num, 16);
+    return whole > 0 ? `${whole} ${num/g}/${16/g}"` : `${num/g}/${16/g}"`;
+}
+
+function _sdDimH(x1, x2, y, label) {
+    const sw=0.5, fs=7, col='#444', arr=4;
+    const ay=_sdR(y), ax1=_sdR(x1), ax2=_sdR(x2), amid=_sdR((x1+x2)/2);
+    return `
+  <line x1="${ax1}" y1="${_sdR(y-8)}" x2="${ax1}" y2="${_sdR(y+2)}" stroke="${col}" stroke-width="${sw}"/>
+  <line x1="${ax2}" y1="${_sdR(y-8)}" x2="${ax2}" y2="${_sdR(y+2)}" stroke="${col}" stroke-width="${sw}"/>
+  <line x1="${ax1}" y1="${ay}" x2="${ax2}" y2="${ay}" stroke="${col}" stroke-width="${sw}"/>
+  <polygon points="${_sdR(x1+arr)},${_sdR(y-2)} ${ax1},${ay} ${_sdR(x1+arr)},${_sdR(y+2)}" fill="${col}"/>
+  <polygon points="${_sdR(x2-arr)},${_sdR(y-2)} ${ax2},${ay} ${_sdR(x2-arr)},${_sdR(y+2)}" fill="${col}"/>
+  <rect x="${_sdR(amid-18)}" y="${_sdR(y-6)}" width="36" height="8" fill="white"/>
+  <text x="${amid}" y="${_sdR(y+0.5)}" text-anchor="middle" dominant-baseline="middle"
+        font-family="Arial" font-size="${fs}" fill="${col}">${label}</text>`;
+}
+
+function _sdDimV(x, y1, y2, label) {
+    const sw=0.5, fs=7, col='#444', arr=4;
+    const ax=_sdR(x), ay1=_sdR(y1), ay2=_sdR(y2), amid=_sdR((y1+y2)/2);
+    return `
+  <line x1="${_sdR(x-2)}" y1="${ay1}" x2="${_sdR(x+8)}" y2="${ay1}" stroke="${col}" stroke-width="${sw}"/>
+  <line x1="${_sdR(x-2)}" y1="${ay2}" x2="${_sdR(x+8)}" y2="${ay2}" stroke="${col}" stroke-width="${sw}"/>
+  <line x1="${ax}" y1="${ay1}" x2="${ax}" y2="${ay2}" stroke="${col}" stroke-width="${sw}"/>
+  <polygon points="${_sdR(x-2)},${_sdR(y1+arr)} ${ax},${ay1} ${_sdR(x+2)},${_sdR(y1+arr)}" fill="${col}"/>
+  <polygon points="${_sdR(x-2)},${_sdR(y2-arr)} ${ax},${ay2} ${_sdR(x+2)},${_sdR(y2-arr)}" fill="${col}"/>
+  <rect x="${_sdR(x-18)}" y="${_sdR(amid-4)}" width="36" height="9" fill="white"
+        transform="rotate(-90,${_sdR(x)},${amid})"/>
+  <text x="${ax}" y="${amid}" text-anchor="middle" dominant-baseline="middle"
+        font-family="Arial" font-size="${fs}" fill="${col}"
+        transform="rotate(-90,${ax},${amid})">${label}</text>`;
+}
+
+function _sdGetVisibleEdgesGeo(geo, eyeDir, creaseAngle) {
+    creaseAngle = creaseAngle ?? 15;
+    const idx = geo.index, pos = geo.attributes.position;
+    if (!idx || idx.count === 0 || !pos) return null;
+    const faceCount = idx.count / 3;
+    const faceNormals = [];
+    const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+    for (let f = 0; f < faceCount; f++) {
+        va.fromBufferAttribute(pos, idx.getX(f*3));
+        vb.fromBufferAttribute(pos, idx.getX(f*3+1));
+        vc.fromBufferAttribute(pos, idx.getX(f*3+2));
+        faceNormals.push(new THREE.Vector3().crossVectors(vb.clone().sub(va), vc.clone().sub(va)).normalize());
+    }
+    const edgeMap = new Map();
+    for (let f = 0; f < faceCount; f++) {
+        for (let e = 0; e < 3; e++) {
+            const a = idx.getX(f*3+e), b = idx.getX(f*3+(e+1)%3);
+            const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+            if (!edgeMap.has(key)) edgeMap.set(key, { a, b, faces: [] });
+            edgeMap.get(key).faces.push(f);
+        }
+    }
+    const creaseThresh = Math.cos(creaseAngle * Math.PI / 180);
+    const verts = [];
+    edgeMap.forEach(({ a, b, faces }) => {
+        const dots = faces.map(f => faceNormals[f].dot(eyeDir));
+        if (!dots.some(d => d > 0)) return;
+        let include = faces.length === 1 ||
+            (dots[0] > 0) !== (dots[1] > 0) ||
+            faceNormals[faces[0]].dot(faceNormals[faces[1]]) < creaseThresh;
+        if (include) {
+            va.fromBufferAttribute(pos, a); vb.fromBufferAttribute(pos, b);
+            verts.push(va.x, va.y, va.z, vb.x, vb.y, vb.z);
+        }
+    });
+    if (verts.length === 0) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    return g;
+}
+
+function _sdAlignGeo(geo) {
+    const pos = geo.attributes.position, n = pos.count;
+    let mx=0, mz=0;
+    for (let i=0;i<n;i++){ mx+=pos.getX(i); mz+=pos.getZ(i); }
+    mx/=n; mz/=n;
+    let c00=0, c02=0, c22=0;
+    for (let i=0;i<n;i++){
+        const dx=pos.getX(i)-mx, dz=pos.getZ(i)-mz;
+        c00+=dx*dx; c02+=dx*dz; c22+=dz*dz;
+    }
+    c00/=n; c02/=n; c22/=n;
+    const corrDenom = Math.sqrt(Math.max(c00*c22, 0));
+    const correlation = corrDenom > 1e-10 ? Math.abs(c02)/corrDenom : 0;
+    const aligned = geo.clone();
+    if (correlation > 0.1) {
+        const angle = 0.5 * Math.atan2(2*c02, c00-c22);
+        aligned.applyMatrix4(new THREE.Matrix4().makeRotationY(angle));
+        aligned.computeBoundingBox();
+        const sz1 = aligned.boundingBox.getSize(new THREE.Vector3());
+        if (sz1.x < sz1.z) aligned.applyMatrix4(new THREE.Matrix4().makeRotationY(Math.PI/2));
+    }
+    aligned.computeBoundingBox();
+    const sz = aligned.boundingBox.getSize(new THREE.Vector3());
+    return { geo: aligned, w: sz.x, d: sz.z, h: sz.y };
+}
+
+function _sdRenderViewSVG(geo, key, ix, iy, imgW, imgH) {
+    const { eye, up } = _sdCAMS[key];
+    const box    = new THREE.Box3().setFromBufferAttribute(geo.attributes.position);
+    const center = box.getCenter(new THREE.Vector3());
+    const zAxis  = eye.clone();
+    const xAxis  = new THREE.Vector3().crossVectors(up, zAxis).normalize();
+    const yAxis  = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+    const corners = [];
+    for (let xi=0;xi<2;xi++) for (let yi=0;yi<2;yi++) for (let zi=0;zi<2;zi++)
+        corners.push(new THREE.Vector3(xi?box.max.x:box.min.x, yi?box.max.y:box.min.y, zi?box.max.z:box.min.z));
+    let minU=Infinity,maxU=-Infinity,minV=Infinity,maxV=-Infinity;
+    for (const c of corners){
+        const u=c.dot(xAxis),v=c.dot(yAxis);
+        if(u<minU)minU=u; if(u>maxU)maxU=u; if(v<minV)minV=v; if(v>maxV)maxV=v;
+    }
+    const uRange=maxU-minU, vRange=maxV-minV;
+    const pad=0.1, aspect=imgW/imgH;
+    let halfU=(uRange/2)*(1+pad), halfV=(vRange/2)*(1+pad);
+    if(halfU/halfV<aspect) halfU=halfV*aspect; else halfV=halfU/aspect;
+    const cu=center.dot(xAxis), cv=center.dot(yAxis);
+    const proj = p => ({
+        x: ix+imgW/2+(p.dot(xAxis)-cu)/halfU*(imgW/2),
+        y: iy+imgH/2-(p.dot(yAxis)-cv)/halfV*(imgH/2),
+    });
+    let s = '';
+    const va=new THREE.Vector3(), vb=new THREE.Vector3();
+    const stroke = 'stroke="#333" stroke-width="0.7" stroke-linecap="round"';
+    const visGeo = _sdGetVisibleEdgesGeo(geo, eye, 15);
+    if (visGeo) {
+        const vp = visGeo.attributes.position;
+        for (let i=0;i<vp.count;i+=2){
+            va.fromBufferAttribute(vp,i); vb.fromBufferAttribute(vp,i+1);
+            const a=proj(va), b=proj(vb);
+            s+=`<line x1="${_sdR(a.x)}" y1="${_sdR(a.y)}" x2="${_sdR(b.x)}" y2="${_sdR(b.y)}" ${stroke}/>\n`;
+        }
+        visGeo.dispose();
+    }
+    return { svgPaths: s, uRange, vRange, halfU, halfV };
+}
+
+function _sdBuildSVG(entry) {
+    const rawGeo = entry.obj.geometry.clone();
+    entry.obj.updateWorldMatrix(true, false);
+    rawGeo.applyMatrix4(entry.obj.matrixWorld);
+    const { geo, w: dimW, d: dimD, h: dimH_ } = _sdAlignGeo(rawGeo);
+    rawGeo.dispose();
+    const dims = { W: dimW, D: dimD, H: dimH_ };
+
+    const KEYS = ['plan','front','right'];
+    const RES  = KEYS.map(key => {
+        const [vx,vy,vw,vh] = _sdVB[key];
+        const imgW = vw - _sdDS, imgH = vh - _sdDS;
+        return { key, imgW, imgH, vx, vy, vw, vh, ...(_sdRenderViewSVG(geo, key, vx, vy, imgW, imgH)) };
+    });
+    geo.dispose();
+
+    const today = new Date().toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' });
+    const LABELS = { plan:'PLAN', front:'FRONT ELEVATION', right:'RIGHT ELEVATION' };
+
+    const clipDefs = KEYS.map(k => {
+        const [vx,vy,vw,vh] = _sdVB[k];
+        return `<clipPath id="sdcp-${k}"><rect x="${vx}" y="${vy}" width="${vw-_sdDS}" height="${vh-_sdDS}"/></clipPath>`;
+    }).join('\n');
+
+    let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${_sdPW}pt" height="${_sdPH}pt" viewBox="0 0 ${_sdPW} ${_sdPH}">
+<defs>${clipDefs}</defs>
+<rect width="${_sdPW}" height="${_sdPH}" fill="white"/>
+<rect x="${_sdM/2}" y="${_sdM/2}" width="${_sdPW-_sdM}" height="${_sdPH-_sdM}" fill="none" stroke="#333" stroke-width="1"/>
+`;
+
+    for (const { key, imgW, imgH, vx, vy, vw, vh, svgPaths, uRange, vRange, halfU, halfV } of RES) {
+        s += `<rect x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="white" stroke="#ccc" stroke-width="0.4"/>\n`;
+        s += `<g clip-path="url(#sdcp-${key})">\n${svgPaths}</g>\n`;
+        s += `<text x="${_sdR(vx+4)}" y="${_sdR(vy+vh-_sdDS-4)}" font-family="Arial" font-size="7" font-weight="bold" fill="#555">${LABELS[key]}</text>\n`;
+
+        const [hKey,vKey] = _sdDIM_ASSIGN[key];
+        const uScale = imgW/(2*halfU), vScale = imgH/(2*halfV);
+        const cx=vx+imgW/2, cy=vy+imgH/2;
+        const objLeft  =cx-(uRange/2)*uScale, objRight =cx+(uRange/2)*uScale;
+        const objTop   =cy-(vRange/2)*vScale,  objBottom=cy+(vRange/2)*vScale;
+        s += _sdDimH(objLeft, objRight, vy+imgH+_sdDS/2, _sdFmtIn(dims[hKey]));
+        s += _sdDimV(vx+imgW+_sdDS/2, objTop, objBottom, _sdFmtIn(dims[vKey]));
+    }
+
+    // Title block
+    const [tx,ty,tw,th] = _sdTB;
+    const col1=tx+tw*0.45, col2=tx+tw*0.72, mid=_sdR(ty+th/2+1);
+    s += `
+<rect x="${tx}" y="${ty}" width="${tw}" height="${th}" fill="white" stroke="#333" stroke-width="0.8"/>
+<line x1="${_sdR(col1)}" y1="${ty}" x2="${_sdR(col1)}" y2="${_sdR(ty+th)}" stroke="#aaa" stroke-width="0.5"/>
+<line x1="${_sdR(col2)}" y1="${ty}" x2="${_sdR(col2)}" y2="${_sdR(ty+th)}" stroke="#aaa" stroke-width="0.5"/>
+<text x="${_sdR(tx+6)}" y="${_sdR(ty+9)}" font-family="Arial" font-size="6" fill="#888">PART NAME</text>
+<text x="${_sdR(tx+6)}" y="${mid}" font-family="Arial" font-size="13" font-weight="bold" fill="#111">${_sdEsc(entry.name)}</text>
+<text x="${_sdR(col1+6)}" y="${_sdR(ty+9)}" font-family="Arial" font-size="6" fill="#888">W × D × H</text>
+<text x="${_sdR(col1+6)}" y="${mid}" font-family="Arial" font-size="11" fill="#111">${_sdFmtIn(dimW)} × ${_sdFmtIn(dimD)} × ${_sdFmtIn(dimH_)}</text>
+<text x="${_sdR(col2+6)}" y="${_sdR(ty+9)}" font-family="Arial" font-size="6" fill="#888">DATE</text>
+<text x="${_sdR(col2+6)}" y="${mid}" font-family="Arial" font-size="11" fill="#111">${today}</text>
+</svg>`;
+    return s;
+}
+
+function _sdGenerate(entry) {
+    const genBtn = document.getElementById('sd-gen-btn');
+    genBtn.disabled = true;
+    genBtn.textContent = 'Generating…';
+    setTimeout(() => {
+        try {
+            const svg = _sdBuildSVG(entry);
+            _sdCurrentSVG  = svg;
+            _sdCurrentName = entry.name;
+            const wrap  = document.getElementById('sd-wrap');
+            const empty = document.getElementById('sd-empty');
+            empty.style.display = 'none';
+            wrap.innerHTML = svg;
+            wrap.classList.add('visible');
+            document.getElementById('sd-dl-btn').classList.add('visible');
+        } catch(e) {
+            console.error('Shop drawing error:', e);
+            document.getElementById('sd-empty').textContent = 'Error generating drawing — see console.';
+            document.getElementById('sd-empty').style.display = '';
+        } finally {
+            genBtn.disabled = false;
+            genBtn.textContent = 'Regenerate';
+        }
+    }, 40);
+}
+
+function _sdDownload() {
+    if (!_sdCurrentSVG) return;
+    const blob = new Blob([_sdCurrentSVG], { type: 'image/svg+xml' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `${(_sdCurrentName||'part').replace(/[^a-z0-9]/gi,'_')}_shop_drawing.svg`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function _sdResetPanel() {
+    _sdCurrentSVG = ''; _sdCurrentName = '';
+    const wrap  = document.getElementById('sd-wrap');
+    const empty = document.getElementById('sd-empty');
+    wrap.innerHTML = ''; wrap.classList.remove('visible');
+    empty.textContent = 'Click Generate to create a shop drawing for this part.';
+    empty.style.display = '';
+    document.getElementById('sd-dl-btn').classList.remove('visible');
+    const genBtn = document.getElementById('sd-gen-btn');
+    genBtn.disabled = false; genBtn.textContent = 'Generate';
+}
+
 // Pointer handling – track each pointer separately to detect drag vs click
 function _isoOnDown(e) {
     _isoDragMap.set(e.pointerId, { x: e.clientX, y: e.clientY, dragged: false });
@@ -2336,33 +2685,51 @@ function _isoOnUp(e) {
       Back
     </button>
     <div id="iso-title">Part</div>
+    <button id="sd-toggle-btn">Drawing</button>
   </div>
-  <div id="iso-viewport">
-    <div class="iso-dbl-hint" id="iso-dbl-hint">Click an edge to measure</div>
-    <div id="iso-part-name"></div>
-  </div>
-  <div id="iso-edge-panel">
-    <div id="iso-mode-wrap">
-      <button class="iso-mode-btn active" id="iso-mode-edge">Edge Length</button>
-      <button class="iso-mode-btn"        id="iso-mode-vtx">Vertex to Vertex</button>
+  <div id="iso-body-row">
+    <!-- Shop Drawing panel (hidden until toggled) -->
+    <div id="iso-drawing-panel">
+      <div id="sd-panel-head">
+        Shop Drawing
+        <button id="sd-gen-btn">Generate</button>
+      </div>
+      <div id="sd-scroll">
+        <div id="sd-empty">Click Generate to create a shop drawing for this part.</div>
+        <div id="sd-wrap"></div>
+      </div>
+      <button id="sd-dl-btn">↓ Download SVG</button>
     </div>
-    <div class="iso-edge-hint" id="iso-edge-hint">Click any edge on the part to measure it</div>
-    <div id="iso-confirm-panel">
-      <div class="iso-confirm-q">Is this the edge you want to measure?</div>
-      <div class="iso-confirm-btns">
-        <button class="iso-btn-cancel" id="iso-btn-no">No, cancel</button>
-        <button class="iso-btn-measure" id="iso-btn-yes">Yes, measure it</button>
+    <!-- 3D viewport + measurement panel -->
+    <div id="iso-right-col">
+      <div id="iso-viewport">
+        <div class="iso-dbl-hint" id="iso-dbl-hint">Click an edge to measure</div>
+        <div id="iso-part-name"></div>
+      </div>
+      <div id="iso-edge-panel">
+        <div id="iso-mode-wrap">
+          <button class="iso-mode-btn active" id="iso-mode-edge">Edge Length</button>
+          <button class="iso-mode-btn"        id="iso-mode-vtx">Vertex to Vertex</button>
+        </div>
+        <div class="iso-edge-hint" id="iso-edge-hint">Click any edge on the part to measure it</div>
+        <div id="iso-confirm-panel">
+          <div class="iso-confirm-q">Is this the edge you want to measure?</div>
+          <div class="iso-confirm-btns">
+            <button class="iso-btn-cancel" id="iso-btn-no">No, cancel</button>
+            <button class="iso-btn-measure" id="iso-btn-yes">Yes, measure it</button>
+          </div>
+        </div>
+        <div id="iso-edge-dim">
+          <div class="iso-edge-label">Edge Length</div>
+          <div>
+            <span class="iso-edge-value" id="iso-edge-val">—</span>
+            <span class="iso-edge-frac" id="iso-edge-frac"></span>
+            <span class="iso-edge-ft"   id="iso-edge-ft"></span>
+          </div>
+        </div>
+        <button id="iso-copy-btn" style="display:none">Copy all measurements</button>
       </div>
     </div>
-    <div id="iso-edge-dim">
-      <div class="iso-edge-label">Edge Length</div>
-      <div>
-        <span class="iso-edge-value" id="iso-edge-val">—</span>
-        <span class="iso-edge-frac" id="iso-edge-frac"></span>
-        <span class="iso-edge-ft"   id="iso-edge-ft"></span>
-      </div>
-    </div>
-    <button id="iso-copy-btn" style="display:none">Copy all measurements</button>
   </div>
 </div>
 </body>
