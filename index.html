@@ -433,7 +433,7 @@
     #iso-body-row { display: flex; flex: 1; overflow: hidden; min-height: 0; }
     #iso-right-col { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 
-    /* ── Shop Drawing panel ──────────────────────────────────────────────────── */
+    /* ── Fabrication Ticket panel ───────────────────────────────────────────── */
     #iso-drawing-panel {
       width: 0; overflow: hidden; flex-shrink: 0;
       display: flex; flex-direction: column;
@@ -1612,7 +1612,7 @@ document.getElementById('copy-dims-btn').addEventListener('click', () => {
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
 });
 
-// ── Shop Drawing panel controls ────────────────────────────────────────────
+// ── Fabrication Ticket panel controls ─────────────────────────────────────
 document.getElementById('sd-toggle-btn').addEventListener('click', () => {
     const panel = document.getElementById('iso-drawing-panel');
     const btn   = document.getElementById('sd-toggle-btn');
@@ -2342,7 +2342,7 @@ function closeIsolatedView() {
     controls.enabled = true;
 }
 
-// ── Shop Drawing panel ────────────────────────────────────────────────────
+// ── Fabrication Ticket panel ──────────────────────────────────────────────
 // 3-view portrait SVG (Plan / Front Elevation / Right Elevation + title block)
 const _sdPW = 600, _sdPH = 910;
 const _sdM = 24, _sdDS = 22, _sdGap = 10, _sdTH = 50;
@@ -2536,6 +2536,7 @@ function _sdBuildSVG(entry) {
 
     let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${_sdPW}pt" height="${_sdPH}pt" viewBox="0 0 ${_sdPW} ${_sdPH}">
 <defs>${clipDefs}</defs>
+<style>rect[id^="sdclick-"]{cursor:pointer}rect[id^="sdclick-"]:hover{fill:rgba(255,221,68,0.07)}</style>
 <rect width="${_sdPW}" height="${_sdPH}" fill="white"/>
 <rect x="${_sdM/2}" y="${_sdM/2}" width="${_sdPW-_sdM}" height="${_sdPH-_sdM}" fill="none" stroke="#333" stroke-width="1"/>
 `;
@@ -2544,6 +2545,8 @@ function _sdBuildSVG(entry) {
         s += `<rect x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="white" stroke="#ccc" stroke-width="0.4"/>\n`;
         s += `<g clip-path="url(#sdcp-${key})">\n${svgPaths}</g>\n`;
         s += `<text x="${_sdR(vx+4)}" y="${_sdR(vy+vh-_sdDS-4)}" font-family="Arial" font-size="7" font-weight="bold" fill="#555">${LABELS[key]}</text>\n`;
+        s += `<text x="${_sdR(vx+vw-_sdDS-4)}" y="${_sdR(vy+11)}" text-anchor="end" font-family="Arial" font-size="8" fill="#ccc" style="pointer-events:none">⤢</text>\n`;
+        s += `<rect id="sdclick-${key}" x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="transparent"/>\n`;
 
         const [hKey,vKey] = _sdDIM_ASSIGN[key];
         const uScale = imgW/(2*halfU), vScale = imgH/(2*halfV);
@@ -2571,6 +2574,82 @@ function _sdBuildSVG(entry) {
     return s;
 }
 
+// ── Single-view SVG (opened in new tab when user clicks a view in the panel) ──
+function _sdBuildSingleViewSVG(geo, key, dims, partName) {
+    // Landscape 11"×9" canvas, one large view with dimension callouts + title block
+    const PW=792, PH=650, M=36, TH=48, GAP=10, DS=32;
+    const imgW = PW - 2*M - DS;   // 688
+    const imgH = PH - 2*M - TH - GAP - DS; // 486
+    const vx = M, vy = M;
+
+    const LABELS = { plan:'PLAN', front:'FRONT ELEVATION', right:'RIGHT ELEVATION' };
+    const today  = new Date().toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' });
+    const { svgPaths, uRange, vRange, halfU, halfV } = _sdRenderViewSVG(geo, key, vx, vy, imgW, imgH);
+
+    const uScale = imgW/(2*halfU), vScale = imgH/(2*halfV);
+    const cx = vx+imgW/2, cy = vy+imgH/2;
+    const objLeft  = cx-(uRange/2)*uScale, objRight = cx+(uRange/2)*uScale;
+    const objTop   = cy-(vRange/2)*vScale,  objBottom= cy+(vRange/2)*vScale;
+    const [hKey,vKey] = _sdDIM_ASSIGN[key];
+
+    const ty = vy + imgH + DS + GAP;
+    const tw = PW - 2*M;
+    const col1 = M + tw*0.44, col2 = M + tw*0.72, mid = _sdR(ty + TH/2 + 1);
+
+    let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${PW}pt" height="${PH}pt" viewBox="0 0 ${PW} ${PH}">
+<defs><clipPath id="svcp"><rect x="${vx}" y="${vy}" width="${imgW}" height="${imgH}"/></clipPath></defs>
+<rect width="${PW}" height="${PH}" fill="white"/>
+<rect x="${M/2}" y="${M/2}" width="${PW-M}" height="${PH-M}" fill="none" stroke="#333" stroke-width="1"/>
+<rect x="${vx}" y="${vy}" width="${imgW+DS}" height="${imgH+DS}" fill="white" stroke="#bbb" stroke-width="0.4"/>
+<g clip-path="url(#svcp)">${svgPaths}</g>
+<text x="${_sdR(vx+5)}" y="${_sdR(vy+imgH-4)}" font-family="Arial" font-size="9" font-weight="bold" fill="#555">${LABELS[key]}</text>
+`;
+    s += _sdDimH(objLeft, objRight, vy+imgH+DS/2, _sdFmtIn(dims[hKey]));
+    s += _sdDimV(vx+imgW+DS/2, objTop, objBottom, _sdFmtIn(dims[vKey]));
+
+    s += `
+<rect x="${M}" y="${ty}" width="${tw}" height="${TH}" fill="white" stroke="#333" stroke-width="0.8"/>
+<line x1="${_sdR(col1)}" y1="${ty}" x2="${_sdR(col1)}" y2="${_sdR(ty+TH)}" stroke="#aaa" stroke-width="0.5"/>
+<line x1="${_sdR(col2)}" y1="${ty}" x2="${_sdR(col2)}" y2="${_sdR(ty+TH)}" stroke="#aaa" stroke-width="0.5"/>
+<text x="${_sdR(M+6)}" y="${_sdR(ty+9)}" font-family="Arial" font-size="6" fill="#888">PART NAME</text>
+<text x="${_sdR(M+6)}" y="${mid}" font-family="Arial" font-size="14" font-weight="bold" fill="#111">${_sdEsc(partName)}</text>
+<text x="${_sdR(col1+6)}" y="${_sdR(ty+9)}" font-family="Arial" font-size="6" fill="#888">W × D × H</text>
+<text x="${_sdR(col1+6)}" y="${mid}" font-family="Arial" font-size="12" fill="#111">${_sdFmtIn(dims.W)} × ${_sdFmtIn(dims.D)} × ${_sdFmtIn(dims.H)}</text>
+<text x="${_sdR(col2+6)}" y="${_sdR(ty+9)}" font-family="Arial" font-size="6" fill="#888">DATE</text>
+<text x="${_sdR(col2+6)}" y="${mid}" font-family="Arial" font-size="12" fill="#111">${today}</text>
+</svg>`;
+    return s;
+}
+
+function _sdOpenView(entry, key) {
+    // Re-process geometry (fast enough for interactive use; avoids caching complexity)
+    const rawGeo = entry.obj.geometry.clone();
+    entry.obj.updateWorldMatrix(true, false);
+    rawGeo.applyMatrix4(entry.obj.matrixWorld);
+    const { geo, w: dimW, d: dimD, h: dimH_ } = _sdAlignGeo(rawGeo);
+    rawGeo.dispose();
+    const dims = { W: dimW, D: dimD, H: dimH_ };
+    const LABELS = { plan:'Plan', front:'Front Elevation', right:'Right Elevation' };
+
+    const svg  = _sdBuildSingleViewSVG(geo, key, dims, entry.name);
+    geo.dispose();
+
+    // Open as HTML page so the SVG is centered on a neutral background
+    const html = `<!DOCTYPE html><html><head>
+<meta charset="UTF-8"/>
+<title>${_sdEsc(LABELS[key])} — ${_sdEsc(entry.name)}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#2a2a2a;display:flex;align-items:flex-start;justify-content:center;padding:32px;min-height:100vh}
+  svg{background:white;box-shadow:0 6px 40px rgba(0,0,0,0.6);max-width:100%}
+</style></head><body>${svg}</body></html>`;
+
+    const blob = new Blob([html], { type: 'text/html' });
+    const url  = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
 function _sdGenerate(entry) {
     const genBtn = document.getElementById('sd-gen-btn');
     genBtn.disabled = true;
@@ -2586,9 +2665,14 @@ function _sdGenerate(entry) {
             wrap.innerHTML = svg;
             wrap.classList.add('visible');
             document.getElementById('sd-dl-btn').classList.add('visible');
+            // Wire click-to-open-view on each view rect
+            ['plan','front','right'].forEach(key => {
+                const el = wrap.querySelector(`#sdclick-${key}`);
+                if (el) el.addEventListener('click', () => _sdOpenView(entry, key));
+            });
         } catch(e) {
-            console.error('Shop drawing error:', e);
-            document.getElementById('sd-empty').textContent = 'Error generating drawing — see console.';
+            console.error('Fabrication ticket error:', e);
+            document.getElementById('sd-empty').textContent = 'Error generating ticket — see console.';
             document.getElementById('sd-empty').style.display = '';
         } finally {
             genBtn.disabled = false;
@@ -2603,7 +2687,7 @@ function _sdDownload() {
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href = url;
-    a.download = `${(_sdCurrentName||'part').replace(/[^a-z0-9]/gi,'_')}_shop_drawing.svg`;
+    a.download = `${(_sdCurrentName||'part').replace(/[^a-z0-9]/gi,'_')}_fab_ticket.svg`;
     a.click();
     URL.revokeObjectURL(url);
 }
@@ -2613,7 +2697,7 @@ function _sdResetPanel() {
     const wrap  = document.getElementById('sd-wrap');
     const empty = document.getElementById('sd-empty');
     wrap.innerHTML = ''; wrap.classList.remove('visible');
-    empty.textContent = 'Click Generate to create a shop drawing for this part.';
+    empty.textContent = 'Click Generate to create a fabrication ticket for this part.';
     empty.style.display = '';
     document.getElementById('sd-dl-btn').classList.remove('visible');
     const genBtn = document.getElementById('sd-gen-btn');
@@ -2685,17 +2769,17 @@ function _isoOnUp(e) {
       Back
     </button>
     <div id="iso-title">Part</div>
-    <button id="sd-toggle-btn">Drawing</button>
+    <button id="sd-toggle-btn">Ticket</button>
   </div>
   <div id="iso-body-row">
-    <!-- Shop Drawing panel (hidden until toggled) -->
+    <!-- Fabrication Ticket panel (hidden until toggled) -->
     <div id="iso-drawing-panel">
       <div id="sd-panel-head">
-        Shop Drawing
+        Fabrication Ticket
         <button id="sd-gen-btn">Generate</button>
       </div>
       <div id="sd-scroll">
-        <div id="sd-empty">Click Generate to create a shop drawing for this part.</div>
+        <div id="sd-empty">Click Generate to create a fabrication ticket for this part.</div>
         <div id="sd-wrap"></div>
       </div>
       <button id="sd-dl-btn">↓ Download SVG</button>
